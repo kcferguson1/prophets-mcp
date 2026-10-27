@@ -1,4 +1,4 @@
-"""Downloads General Conference talks and BYU speeches by the First Presidency and the Twelve into prophets.db.
+"""Downloads General Conference talks and BYU speeches by the Church's senior leaders into prophets.db.
 
 Usage: uv run fetch.py [speaker-slug ...]   (no slugs = everyone; rerunning skips talks already saved)
 """
@@ -9,12 +9,14 @@ import re
 import sqlite3
 import sys
 import time
+import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-DB = Path(__file__).with_name("prophets.db")
+DB = Path(os.environ.get("PROPHETS_DB") or Path(__file__).with_name("prophets.db"))  # hosts point this at a disk
 LOCK = DB.with_suffix(".updating")  # held by server.py's monthly update while this runs
+CHECKED = DB.with_suffix(".checked")  # touched only when a full run finishes cleanly
 CHURCH = "https://www.churchofjesuschrist.org"
 BYU = "https://speeches.byu.edu"
 
@@ -39,6 +41,16 @@ SPEAKERS = {
     "russell-m-nelson": "Russell M. Nelson",
     "jeffrey-r-holland": "Jeffrey R. Holland",
     "m-russell-ballard": "M. Russell Ballard",
+    # General officers: the Relief Society, Young Women and Primary general presidencies (Church pages, Oct 2026).
+    "camille-n-johnson": "Camille N. Johnson",
+    "j-anette-dennis": "J. Anette Dennis",
+    "kristin-m-yee": "Kristin M. Yee",
+    "emily-belle-freeman": "Emily Belle Freeman",
+    "tamara-w-runia": "Tamara W. Runia",
+    "andrea-munoz-spannaus": "Andrea Muñoz Spannaus",
+    "rosemary-k-chibota": "Rosemary K. Chibota",
+    "nina-m-garfield": "Nina M. Garfield",
+    "theresa-a-collins": "Theresa A. Collins",
 }
 
 # Counselors read these as procedure; they're lists of names, not teaching.
@@ -62,7 +74,8 @@ class _Paragraphs(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        if tag == "p" and not {"author-name", "author-role"} & set((a.get("class") or "").split()):
+        # Footnotes (ids note1_p1, note_title1, ...) are citations, not teaching.
+        if tag == "p" and not {"author-name", "author-role"} & set((a.get("class") or "").split()) and not (a.get("id") or "").startswith("note"):
             self.current = (a.get("id"), [])
         elif tag == "sup":  # footnote markers
             self.in_sup += 1
@@ -131,6 +144,7 @@ def main():
         sys.exit(f"Unknown speaker(s): {', '.join(unknown)}. Choose from: {', '.join(SPEAKERS)}")
     con = connect()
     done = {url for (url,) in con.execute("SELECT DISTINCT url FROM passages")}
+    failed = False
     for slug in slugs:
         print(SPEAKERS[slug])
         for source in (conference, byu):
@@ -142,12 +156,17 @@ def main():
                     )
                     con.commit()
                     print(f"  {date}  {title}  ({len(paras)} paragraphs)")
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    raise
+                print(f"  no {source.__name__} page yet")  # newer leaders who haven't spoken there; not a failure
             except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
                 print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
+                failed = True
         talks = con.execute("SELECT source, COUNT(DISTINCT url) FROM passages WHERE speaker = ? GROUP BY source", (slug,))
         print("  total:", ", ".join(f"{n} {src}" for src, n in talks) or "nothing")
-    if not sys.argv[1:]:
-        os.utime(DB)  # marks a full check, even when nothing new was found, so the monthly update waits another month
+    if not sys.argv[1:] and not failed:
+        CHECKED.touch()  # the monthly update waits another month; a cut-off or failed run never gets here, so it retries
     LOCK.unlink(missing_ok=True)
 
 

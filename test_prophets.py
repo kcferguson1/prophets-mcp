@@ -2,7 +2,7 @@
 from fetch import connect, paragraphs
 from server import search_passages
 
-body = '<p class="author-name" id="a">By President X</p><p id="p_1">Faith in Jesus<sup class="marker">1</sup> Christ &amp; hope.</p><p id="p_2"> </p>'
+body = '<p class="author-name" id="a">By President X</p><p id="p_1">Faith in Jesus<sup class="marker">1</sup> Christ &amp; hope.</p><p id="p_2"> </p><p id="note_title1">Notes</p><p id="note1_p1">See Mosiah 3:19.</p>'
 assert paragraphs(body) == [("p_1", "Faith in Jesus Christ & hope.")], paragraphs(body)
 
 con = connect(":memory:")

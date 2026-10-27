@@ -1,5 +1,4 @@
 .venv/
 __pycache__/
-prophets.db
+prophets.*
 *.log
-prophets.updating

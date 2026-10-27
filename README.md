@@ -93,26 +93,26 @@ Conference links jump straight to the quoted paragraph. BYU links open the speec
 
 | Speaker | Slug | Calling | Apostle since | Conference talks | BYU speeches | Devotionals & articles | Passages |
 |---|---|---|---|---|---|---|---|
-| Dallin H. Oaks | `dallin-h-oaks` | President of the Church | 1984 | 99 | 33 | 91 | 9,356 |
-| Henry B. Eyring | `henry-b-eyring` | First Counselor in the First Presidency | 1995 | 106 | 20 | 91 | 7,372 |
-| D. Todd Christofferson | `d-todd-christofferson` | Second Counselor in the First Presidency | 2008 | 44 | 12 | 48 | 3,659 |
-| Dieter F. Uchtdorf | `dieter-f-uchtdorf` | Acting President of the Quorum of the Twelve | 2004 | 75 | 6 | 90 | 6,893 |
-| David A. Bednar | `david-a-bednar` | Quorum of the Twelve | 2004 | 45 | 10 | 51 | 4,504 |
-| Quentin L. Cook | `quentin-l-cook` | Quorum of the Twelve | 2007 | 41 | 7 | 55 | 3,847 |
-| Neil L. Andersen | `neil-l-andersen` | Quorum of the Twelve | 2009 | 41 | 10 | 48 | 4,324 |
-| Ronald A. Rasband | `ronald-a-rasband` | Quorum of the Twelve | 2015 | 29 | 7 | 21 | 2,349 |
-| Gary E. Stevenson | `gary-e-stevenson` | Quorum of the Twelve | 2015 | 26 | 4 | 17 | 2,076 |
-| Dale G. Renlund | `dale-g-renlund` | Quorum of the Twelve | 2015 | 25 | 6 | 20 | 1,866 |
-| Gerrit W. Gong | `gerrit-w-gong` | Quorum of the Twelve | 2018 | 20 | 7 | 18 | 2,134 |
-| Ulisses Soares | `ulisses-soares` | Quorum of the Twelve | 2018 | 23 | 4 | 26 | 1,465 |
-| Patrick Kearon | `patrick-kearon` | Quorum of the Twelve | 2023 | 9 | 4 | 13 | 1,138 |
-| Gérald Caussé | `gerald-causse` | Quorum of the Twelve | 2025 | 10 | 2 | 8 | 745 |
-| Clark G. Gilbert | `clark-g-gilbert` | Quorum of the Twelve | 2026 | 3 | 4 | 5 | 427 |
-| Russell M. Nelson | `russell-m-nelson` | 17th President of the Church (died 2025) | 1984 | 114 | 22 | 42 | 6,851 |
-| Jeffrey R. Holland | `jeffrey-r-holland` | President of the Quorum of the Twelve (died 2025) | 1994 | 64 | 36 | 75 | 6,646 |
-| M. Russell Ballard | `m-russell-ballard` | Acting President of the Quorum of the Twelve (died 2023) | 1985 | 88 | 22 | 87 | 7,384 |
+| Dallin H. Oaks | `dallin-h-oaks` | President of the Church | 1984 | 99 | 33 | 91 | 8,739 |
+| Henry B. Eyring | `henry-b-eyring` | First Counselor in the First Presidency | 1995 | 106 | 20 | 91 | 6,868 |
+| D. Todd Christofferson | `d-todd-christofferson` | Second Counselor in the First Presidency | 2008 | 44 | 12 | 48 | 3,382 |
+| Dieter F. Uchtdorf | `dieter-f-uchtdorf` | Acting President of the Quorum of the Twelve | 2004 | 75 | 6 | 90 | 6,006 |
+| David A. Bednar | `david-a-bednar` | Quorum of the Twelve | 2004 | 45 | 10 | 51 | 4,104 |
+| Quentin L. Cook | `quentin-l-cook` | Quorum of the Twelve | 2007 | 41 | 7 | 55 | 3,529 |
+| Neil L. Andersen | `neil-l-andersen` | Quorum of the Twelve | 2009 | 41 | 10 | 48 | 3,891 |
+| Ronald A. Rasband | `ronald-a-rasband` | Quorum of the Twelve | 2015 | 29 | 7 | 21 | 2,089 |
+| Gary E. Stevenson | `gary-e-stevenson` | Quorum of the Twelve | 2015 | 26 | 4 | 17 | 1,874 |
+| Dale G. Renlund | `dale-g-renlund` | Quorum of the Twelve | 2015 | 25 | 6 | 20 | 1,649 |
+| Gerrit W. Gong | `gerrit-w-gong` | Quorum of the Twelve | 2018 | 20 | 7 | 18 | 1,924 |
+| Ulisses Soares | `ulisses-soares` | Quorum of the Twelve | 2018 | 23 | 4 | 26 | 1,340 |
+| Patrick Kearon | `patrick-kearon` | Quorum of the Twelve | 2023 | 9 | 4 | 13 | 973 |
+| Gérald Caussé | `gerald-causse` | Quorum of the Twelve | 2025 | 10 | 2 | 8 | 667 |
+| Clark G. Gilbert | `clark-g-gilbert` | Quorum of the Twelve | 2026 | 3 | 4 | 5 | 390 |
+| Russell M. Nelson | `russell-m-nelson` | 17th President of the Church (died 2025) | 1984 | 114 | 22 | 42 | 6,342 |
+| Jeffrey R. Holland | `jeffrey-r-holland` | President of the Quorum of the Twelve (died 2025) | 1994 | 64 | 36 | 75 | 6,087 |
+| M. Russell Ballard | `m-russell-ballard` | Acting President of the Quorum of the Twelve (died 2023) | 1985 | 88 | 22 | 87 | 6,987 |
 
-Roster as of March 2026, plus apostles who died since October 2021. Counts include talks given before each speaker became an apostle. When callings change, edit `SPEAKERS` in [`fetch.py`](fetch.py) and run it again.
+Roster as of March 2026, plus apostles who died since October 2021. Counts include talks given before each speaker became an apostle. Passages are the paragraphs search can return: footnotes and paragraphs under eight words are left out. When callings change, edit `SPEAKERS` in [`fetch.py`](fetch.py) and run it again.
 
 ## Women leaders
 
@@ -120,13 +120,13 @@ The women who preside over the Relief Society, Young Women and Primary lead the 
 
 | Speaker | Slug | Calling | Serving since | Conference talks | BYU speeches | Devotionals & articles | Passages |
 |---|---|---|---|---|---|---|---|
-| Camille N. Johnson | `camille-n-johnson` | Relief Society General President | 2022 | 3 | 1 | 26 | 1,677 |
-| J. Anette Dennis | `j-anette-dennis` | First Counselor, Relief Society General Presidency | 2022 | 3 | 1 | 12 | 618 |
-| Kristin M. Yee | `kristin-m-yee` | Second Counselor, Relief Society General Presidency | 2022 | 3 | 1 | 12 | 679 |
-| Emily Belle Freeman | `emily-belle-freeman` | Young Women General President | 2023 | 3 | — | 7 | 417 |
-| Tamara W. Runia | `tamara-w-runia` | First Counselor, Young Women General Presidency | 2023 | 3 | — | 6 | 696 |
-| Andrea Muñoz Spannaus | `andrea-munoz-spannaus` | Second Counselor, Young Women General Presidency | 2023 | 3 | — | 3 | 264 |
-| Rosemary K. Chibota | `rosemary-k-chibota` | Primary General President | 2026 | 1 | — | — | 34 |
+| Camille N. Johnson | `camille-n-johnson` | Relief Society General President | 2022 | 3 | 1 | 26 | 1,417 |
+| J. Anette Dennis | `j-anette-dennis` | First Counselor, Relief Society General Presidency | 2022 | 3 | 1 | 12 | 519 |
+| Kristin M. Yee | `kristin-m-yee` | Second Counselor, Relief Society General Presidency | 2022 | 3 | 1 | 12 | 596 |
+| Emily Belle Freeman | `emily-belle-freeman` | Young Women General President | 2023 | 3 | — | 7 | 298 |
+| Tamara W. Runia | `tamara-w-runia` | First Counselor, Young Women General Presidency | 2023 | 3 | — | 6 | 538 |
+| Andrea Muñoz Spannaus | `andrea-munoz-spannaus` | Second Counselor, Young Women General Presidency | 2023 | 3 | — | 3 | 223 |
+| Rosemary K. Chibota | `rosemary-k-chibota` | Primary General President | 2026 | 1 | — | — | 26 |
 | Nina M. Garfield | `nina-m-garfield` | First Counselor, Primary General Presidency | 2026 | — | — | — | — |
 | Theresa A. Collins | `theresa-a-collins` | Second Counselor, Primary General Presidency | 2026 | — | — | — | — |
 

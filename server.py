@@ -86,9 +86,9 @@ def main():
 
     if speaker:
         name = SPEAKERS[speaker]
-        mcp = MCPServer(name, instructions=f"Searches {name}'s General Conference talks and BYU speeches. {CITE}")
+        mcp = MCPServer(name, instructions=f"Searches {name}'s General Conference talks, devotionals, magazine articles and BYU speeches. {CITE}")
 
-        @mcp.tool(description=f"Search {name}'s General Conference talks and BYU speeches. Returns passages in the speaker's own words, each with title, date and source link. {CITE}")
+        @mcp.tool(description=f"Search {name}'s General Conference talks, devotionals, magazine articles and BYU speeches. Returns passages in the speaker's own words, each with title, date and source link. {CITE}")
         def search(query: str, limit: int = 8) -> str:
             return search_passages(con, query, speaker, max(1, min(limit, 20)))
 

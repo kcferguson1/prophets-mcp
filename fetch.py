@@ -1,6 +1,9 @@
-"""Downloads General Conference talks and BYU speeches by the Church's senior leaders into prophets.db.
+"""Downloads talks and articles by the Church's senior leaders into prophets.db.
 
-Usage: uv run fetch.py [speaker-slug ...]   (no slugs = everyone; rerunning skips talks already saved)
+Sources: General Conference, BYU Speeches, Church broadcasts and devotionals, and the Liahona, Ensign,
+New Era and For the Strength of Youth magazines.
+
+Usage: uv run fetch.py [speaker-slug ...]   (no slugs = everyone and every source; rerunning skips what's saved)
 """
 import html
 import json
@@ -18,6 +21,7 @@ DB = Path(os.environ.get("PROPHETS_DB") or Path(__file__).with_name("prophets.db
 LOCK = DB.with_suffix(".updating")  # held by server.py's monthly update while this runs
 CHECKED = DB.with_suffix(".checked")  # touched only when a full run finishes cleanly
 CHURCH = "https://www.churchofjesuschrist.org"
+API = f"{CHURCH}/study/api/v3/language-pages/type"
 BYU = "https://speeches.byu.edu"
 
 # Roster as of March 2026 (Church News). Update when callings change.
@@ -54,15 +58,39 @@ SPEAKERS = {
 }
 
 # Counselors read these as procedure; they're lists of names, not teaching.
-SKIP_TITLES = re.compile(r"sustaining of|auditing department|statistical report", re.I)
+SKIP_TITLES = re.compile(r"sustaining of|auditing department|statistical report|solemn assembly|\bexcerpts\b", re.I)
+
+MAGAZINES = {"liahona": "Liahona", "ensign": "Ensign", "new-era": "New Era", "ftsoy": "For the Strength of Youth"}
+MAGAZINE_ROOTS = ("/magazines/liahona", "/magazines/for-the-strength-of-youth", "/magazines/ensign-19712020")
+BROADCASTS_ROOT = "/videos-and-images/broadcasts-and-devotionals"
+# Magazine columns whose table-of-contents byline is a label, not a name, though our speakers write them.
+HIDDEN_AUTHOR_LABELS = ("Covenant Women", "Answers from an Apostle", "First Presidency Message")
+MIN_WORDS = 100  # shorter pages are video-only stubs, posters or quote cards
+
+SKIP_P_CLASSES = {"author-name", "author-role", "reference", "series-title", "subtitle", "title-number"}
+SKIP_P_IDS = ("note", "figure")  # footnotes and image captions
 
 
 def get(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh) the-prophets-mcp"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        body = r.read().decode()
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                body = r.read().decode()
+            break
+        except urllib.error.HTTPError:
+            raise  # a real answer from the site, like 404; retrying won't change it
+        except OSError:  # timeouts and dropped connections
+            if attempt == 2:
+                raise
+            time.sleep(10 * (attempt + 1))
     time.sleep(0.3)  # be polite to both sites
     return body
+
+
+def api(kind: str, uri: str) -> dict:
+    """The Church's Gospel Library API: kind "content" for a page, "dynamic" for a collection listing."""
+    return json.loads(get(f"{API}/{kind}?lang=eng&uri={uri}"))
 
 
 class _Paragraphs(HTMLParser):
@@ -74,8 +102,7 @@ class _Paragraphs(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        # Footnotes (ids note1_p1, note_title1, ...) are citations, not teaching.
-        if tag == "p" and not {"author-name", "author-role"} & set((a.get("class") or "").split()) and not (a.get("id") or "").startswith("note"):
+        if tag == "p" and not SKIP_P_CLASSES & set((a.get("class") or "").split()) and not (a.get("id") or "").startswith(SKIP_P_IDS):
             self.current = (a.get("id"), [])
         elif tag == "sup":  # footnote markers
             self.in_sup += 1
@@ -95,10 +122,29 @@ class _Paragraphs(HTMLParser):
 
 
 def paragraphs(body: str) -> list[tuple[str | None, str]]:
-    """(paragraph id, text) for each <p> in a talk body, minus the byline."""
+    """(paragraph id, text) for each <p> in a talk body, minus the byline, footnotes and captions."""
     parser = _Paragraphs()
     parser.feed(body)
     return parser.found
+
+
+def text_of(fragment: str) -> str:
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())  # split() also folds non-breaking spaces
+
+
+def author(data: dict) -> str | None:
+    """Slug of the speaker who wrote a Gospel Library page, if it's one of ours."""
+    try:
+        who = json.loads(data["meta"]["structuredData"])["mainEntity"]["author"]
+    except (KeyError, TypeError, ValueError):
+        who = {}
+    if isinstance(who, list):
+        who = who[0] if who else {}
+    slug = str(who.get("url", "") if isinstance(who, dict) else "").rsplit("/", 1)[-1]
+    if slug in SPEAKERS:
+        return slug
+    byline = text_of(" ".join(re.findall(r'class="author-name"[^>]*>(.*?)</p>', data["content"]["body"], re.S)))
+    return next((s for s, name in SPEAKERS.items() if name in byline), None)
 
 
 def connect(path=DB) -> sqlite3.Connection:
@@ -109,6 +155,8 @@ def connect(path=DB) -> sqlite3.Connection:
             title, text, speaker UNINDEXED, name UNINDEXED, source UNINDEXED, date UNINDEXED, url UNINDEXED, anchor UNINDEXED,
             tokenize='porter unicode61 remove_diacritics 2')"""
     )
+    # Gospel Library pages, events and issues already checked, whether or not they were by one of ours.
+    con.execute("CREATE TABLE IF NOT EXISTS seen (uri TEXT PRIMARY KEY)")
     return con
 
 
@@ -118,7 +166,7 @@ def conference(slug: str, done: set[str]):
         url = f"{CHURCH}/study/general-conference/{path}?lang=eng"
         if url in done:
             continue
-        data = json.loads(get(f"{CHURCH}/study/api/v3/language-pages/type/content?lang=eng&uri=/general-conference/{path}"))
+        data = api("content", f"/general-conference/{path}")
         title = data["meta"]["title"]
         if not SKIP_TITLES.search(title):
             yield "General Conference", title, path[:7].replace("/", "-"), url, paragraphs(data["content"]["body"])
@@ -138,6 +186,131 @@ def byu(slug: str, done: set[str]):
         yield "BYU Speeches", html.unescape(hit["title"]["rendered"]), hit["date"][:10], url, paragraphs(hit["content"]["rendered"])
 
 
+def walk(uri: str):
+    """Every item uri under a Gospel Library collection, following sub-collections."""
+    try:
+        listing = api("dynamic", uri)["collection"]
+    except urllib.error.HTTPError:
+        return  # an empty or retired collection
+    for section in listing.get("sections", []):
+        for entry in section.get("entries", []):
+            if entry.get("type") == "collection":
+                yield from walk(entry["uri"])
+            else:
+                yield entry["uri"]
+
+
+def record(uri: str, label: str, data: dict | None = None):
+    """(speaker, source, title, date, url, paragraphs) for a page by one of ours, or None."""
+    try:
+        data = data or api("content", uri)
+    except urllib.error.HTTPError:
+        return None  # video-only or moved pages
+    body = data["content"]["body"]
+    slug = author(data)
+    paras = paragraphs(body)
+    if not slug or sum(len(t.split()) for _, t in paras) < MIN_WORDS or SKIP_TITLES.search(data["meta"]["title"]):
+        return None
+    if re.search(r'class="title-number"[^>]*>[^<]*Session', body):
+        return None  # an excerpt of a conference talk, which we already have in full
+    when = re.search(r"/(\d{4})/(\d{2})", uri)
+    date = "-".join(when.groups()) if when else ""
+    return slug, label, data["meta"]["title"], date, f"{CHURCH}/study{uri}?lang=eng", paras
+
+
+def settled(year: str, month: str) -> bool:
+    """True once a conference or issue is two months old, so its listing won't change and needn't be read again."""
+    return f"{year}/{month}" < time.strftime("%Y/%m", time.localtime(time.time() - 62 * 86400))
+
+
+def conference_tocs(seen: set[str]):
+    """Every General Conference table of contents, the official list of who spoke; catches talks a speaker page misses."""
+    for year in range(1971, int(time.strftime("%Y")) + 1):
+        for month in ("04", "10"):
+            toc = f"/general-conference/{year}/{month}"
+            if toc in seen:
+                continue
+            try:
+                body = api("content", toc)["content"]["body"]
+            except urllib.error.HTTPError:
+                continue  # a conference not held yet
+            for uri, inner in re.findall(r'<a href="/study(/general-conference/\d{4}/\d{2}/[^"?#]+)[^>]*>(.*?)</a>', body, re.S):
+                byline = text_of(" ".join(re.findall(r'class="primaryMeta"[^>]*>(.*?)</p>', inner, re.S)))
+                if uri not in seen and any(name in byline for name in SPEAKERS.values()):
+                    yield uri, record(uri, "General Conference")
+            yield (toc if settled(str(year), month) else None), None
+
+
+def broadcasts(seen: set[str]):
+    """Devotionals and other broadcasts. Yields (uri to mark seen, record or None)."""
+    for event in walk(BROADCASTS_ROOT):
+        if not event.startswith("/broadcasts/") or event in seen:
+            continue
+        try:
+            data = api("content", event)
+        except urllib.error.HTTPError:
+            yield event, None  # single-talk events that only redirect on the website
+            continue
+        talks = sorted({t for t in re.findall(r'href="/study(/broadcasts/[^"?#]+)', data["content"]["body"]) if t.startswith(event + "/")})
+        for talk in talks:
+            if talk not in seen:
+                yield talk, record(talk, "Church broadcast")
+        yield event, None if talks else record(event, "Church broadcast", data)
+
+
+def magazine_articles(body: str):
+    """Article uris in an issue's table of contents that may be by one of ours."""
+    for attrs, uri, inner in re.findall(r'<li([^>]*)>\s*<a [^>]*?href="/study([^"?#]+)[^>]*>(.*?)</a>', body, re.S):
+        if "general-conference" in attrs or "-session/" in uri or "local-pages" in uri:
+            continue  # conference reprints and local news
+        byline = text_of(" ".join(re.findall(r'class="primaryMeta"[^>]*>(.*?)</p>', inner, re.S)))
+        leaders = re.findall(r'data-uri="/church/leader/([^"]+)"', inner)
+        if any(s in SPEAKERS for s in leaders) or any(n in byline for n in SPEAKERS.values()) or any(l in byline for l in HIDDEN_AUTHOR_LABELS):
+            yield uri
+
+
+def magazines(seen: set[str]):
+    """Liahona (2021 on), Ensign, New Era and For the Strength of Youth. Yields (uri to mark seen, record or None)."""
+    for root in MAGAZINE_ROOTS:
+        for issue in walk(root):
+            m = re.match(r"/(liahona|ensign|new-era|ftsoy)/(\d{4})/(\d{2})", issue)
+            # Before 2021 the Liahona was an international edition that reprinted the Ensign and New Era.
+            if not m or issue in seen or (m[1] == "liahona" and int(m[2]) < 2021):
+                continue
+            try:
+                body = api("content", issue)["content"]["body"]
+            except urllib.error.HTTPError:
+                continue
+            for uri in magazine_articles(body):
+                if uri not in seen:
+                    yield uri, record(uri, MAGAZINES[m[1]])
+            # Recent issues are checked again next month, for digital-only articles added late.
+            yield (issue if settled(m[2], m[3]) else None), None
+
+
+def months(date: str) -> int:
+    year, month = date.split("-")[:2]
+    return int(year) * 12 + int(month)
+
+
+def reprint(con, slug, src, title, date) -> bool:
+    """A magazine's reprint of a conference talk we already have: same speaker and title, within three months after."""
+    if src not in MAGAZINES.values() or not date:
+        return False
+    rows = con.execute(
+        "SELECT DISTINCT date FROM passages WHERE source = 'General Conference' AND speaker = ? AND title = ?", (slug, title)
+    )
+    return any(0 <= months(date) - months(d) <= 3 for (d,) in rows)
+
+
+def save(con, slug, src, title, date, url, paras):
+    con.executemany(
+        "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",
+        [(title, text, slug, SPEAKERS[slug], src, date, url, anchor) for anchor, text in paras],
+    )
+    print(f"  {date}  {SPEAKERS[slug]}: {title}  ({len(paras)} paragraphs)")
+
+
 def main():
     slugs = sys.argv[1:] or list(SPEAKERS)
     if unknown := [s for s in slugs if s not in SPEAKERS]:
@@ -149,24 +322,41 @@ def main():
         print(SPEAKERS[slug])
         for source in (conference, byu):
             try:
-                for src, title, date, url, paras in source(slug, done):
-                    con.executemany(
-                        "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",
-                        [(title, text, slug, SPEAKERS[slug], src, date, url, anchor) for anchor, text in paras],
-                    )
+                for hit in source(slug, done):
+                    save(con, slug, *hit)
                     con.commit()
-                    print(f"  {date}  {title}  ({len(paras)} paragraphs)")
             except urllib.error.HTTPError as e:
-                if e.code != 404:
-                    raise
-                print(f"  no {source.__name__} page yet")  # newer leaders who haven't spoken there; not a failure
+                if e.code == 404:
+                    print(f"  no {source.__name__} page yet")  # newer leaders who haven't spoken there; not a failure
+                else:
+                    print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
+                    failed = True
             except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
                 print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
                 failed = True
         talks = con.execute("SELECT source, COUNT(DISTINCT url) FROM passages WHERE speaker = ? GROUP BY source", (slug,))
         print("  total:", ", ".join(f"{n} {src}" for src, n in talks) or "nothing")
-    if not sys.argv[1:] and not failed:
-        CHECKED.touch()  # the monthly update waits another month; a cut-off or failed run never gets here, so it retries
+
+    # These sources are listed by event or issue, not by speaker, so they run only on a full run.
+    if not sys.argv[1:]:
+        seen = {uri for (uri,) in con.execute("SELECT uri FROM seen")}
+        saved = {url for (url,) in con.execute("SELECT DISTINCT url FROM passages")}  # fresh: includes this run's saves
+        seen |= {url.split("/study", 1)[1].split("?")[0] for url in saved if "/study/" in url}
+        for source in (conference_tocs, broadcasts, magazines):
+            print(source.__name__.capitalize())
+            try:
+                for uri, hit in source(seen):
+                    if hit and not reprint(con, *hit[:4]):
+                        save(con, *hit)
+                    if uri:
+                        seen.add(uri)
+                        con.execute("INSERT OR IGNORE INTO seen VALUES (?)", (uri,))
+                    con.commit()
+            except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
+                print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
+                failed = True
+        if not failed:
+            CHECKED.touch()  # the monthly update waits another month; a cut-off or failed run never gets here, so it retries
     LOCK.unlink(missing_ok=True)
 
 

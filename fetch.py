@@ -101,6 +101,16 @@ MIN_WORDS = 100  # shorter pages are video-only stubs, posters or quote cards
 
 SKIP_P_CLASSES = {"author-name", "author-role", "reference", "series-title", "subtitle", "title-number"}
 SKIP_P_IDS = ("note", "figure")  # footnotes and image captions
+# Labels, not teaching: "From a devotional address, '…,' delivered at BYU on April 10, 2018." says where a reprint came
+# from, and "CES Devotional for Young Adults • May 4, 2014 • San Diego, California" heads a BYU Speeches transcript.
+SOURCE_NOTE = re.compile(
+    r"^(?:Adapted |Excerpted |Taken )?from (?:a|an) .*\b(?:address|devotional|talk|fireside|speech|remarks|commencement|broadcast)", re.I
+)
+
+
+def is_source_note(text: str) -> bool:
+    words = len(text.split())
+    return (words < 60 and bool(SOURCE_NOTE.match(text))) or (words < 30 and " • " in text)
 
 
 def hold_lock():
@@ -185,7 +195,7 @@ class _Paragraphs(HTMLParser):
             self.in_sup -= 1
         elif tag == "p" and self.current:
             text = " ".join("".join(self.current[1]).split())
-            if text:
+            if text and not is_source_note(text):
                 self.found.append((self.current[0], text))
             self.current = None
 
@@ -270,7 +280,8 @@ def byu(slug: str, done: set[str]):
         if not hit:
             print(f"  ! no API record for {url}", file=sys.stderr)
             continue
-        yield "BYU Speeches", html.unescape(hit["title"]["rendered"]), hit["date"][:10], url, paragraphs(hit["content"]["rendered"])
+        title = html.unescape(html.unescape(hit["title"]["rendered"]))  # some titles are escaped twice ("D&amp;amp;C")
+        yield "BYU Speeches", title, hit["date"][:10], url, paragraphs(hit["content"]["rendered"])
 
 
 def walk(uri: str, top: bool = True):

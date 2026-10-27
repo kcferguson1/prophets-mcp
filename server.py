@@ -41,12 +41,12 @@ def search_passages(con: sqlite3.Connection, query: str, speaker: str | None, li
         (match, speaker, speaker, limit * 20),
     ).fetchall()
     per_talk: dict[str, int] = {}
-    shown: set[tuple[str, str]] = set()  # a joint talk is stored once per speaker; show each paragraph once
+    shown: set[str] = set()  # the same paragraph can be saved twice (a joint talk, a reprint under a new title); show it once
     out = []
     for name, title, source, date, url, anchor, text in rows:
-        if per_talk.get(url, 0) >= MAX_PER_TALK or len(text.split()) < MIN_WORDS or (url, text) in shown:
+        if per_talk.get(url, 0) >= MAX_PER_TALK or len(text.split()) < MIN_WORDS or text in shown:
             continue
-        shown.add((url, text))
+        shown.add(text)
         per_talk[url] = per_talk.get(url, 0) + 1
         link = f"{url}&id={anchor}#{anchor}" if anchor else url  # conference links jump to the paragraph
         out.append(f'## {len(out) + 1}. {name}, "{title}"\n{source}, {date}\nSource: {link}\n\n{text}')

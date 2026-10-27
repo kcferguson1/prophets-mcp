@@ -121,6 +121,15 @@ joint_out = search_passages(con, "ministering healing", None)
 assert joint_out.count("Ministering together") == 1 and both in joint_out, joint_out
 assert both in search_passages(con, "ministering healing", "j-anette-dennis")
 
+# A reprint under a new title shows its shared paragraph once; a reprint's source note isn't a passage at all.
+for url in ("https://b/holier/", "https://e/holier?lang=eng"):
+    con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Holier", "Even in declaring His own divinity, Jesus ministered to the one.", "neil-l-andersen", "Neil L. Andersen", "Ensign", "2019-06", url, None))
+assert search_passages(con, "ministered divinity", "neil-l-andersen").count("Even in declaring") == 1
+assert paragraphs('<p>CES Devotional for Young Adults • May 4, 2014 • San Diego, California</p>') == []
+assert paragraphs('<p>From a devotional address, “A Holier Approach to Ministering,” delivered at Brigham Young University on April 10, 2018.</p>'
+                  '<p>From the First Vision, we learn that because of the grace of our Savior we too can be forgiven.</p>') == [
+    (None, "From the First Vision, we learn that because of the grace of our Savior we too can be forgiven.")]
+
 # A magazine's reprint of a conference talk is skipped; a broadcast with the same title, or a much later article, is not.
 assert reprint(con, "dallin-h-oaks", "Liahona", "Talk A", "2025-11")
 assert not reprint(con, "dallin-h-oaks", "Church broadcast", "Talk A", "2025-11")

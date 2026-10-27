@@ -2,3 +2,4 @@
 __pycache__/
 prophets.db
 *.log
+prophets.updating

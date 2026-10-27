@@ -3,15 +3,20 @@
 Usage: uv run server.py --speaker dallin-h-oaks   (leave out --speaker for one server covering everyone)
 """
 import argparse
+import os
 import re
 import sqlite3
+import subprocess
 import sys
+import time
 
 from mcp.server.mcpserver import MCPServer
 
-from fetch import DB
+from fetch import DB, LOCK, SPEAKERS
 
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
+DAY = 86400
+UPDATE_EVERY = 30 * DAY
 CITE = "Quote passages in the speaker's own words and cite each one with its Source link, title and date."
 
 
@@ -49,12 +54,33 @@ def list_sources(con: sqlite3.Connection, speaker: str | None) -> str:
     return "\n".join(f"- {name}, {date}, {source}: {title} ({url})" for name, date, source, title, url in rows)
 
 
+def update_if_stale():
+    """Fetch new talks in the background when the last full check is over a month old."""
+    if time.time() - DB.stat().st_mtime < UPDATE_EVERY:
+        return
+    if LOCK.exists() and time.time() - LOCK.stat().st_mtime > DAY:
+        LOCK.unlink(missing_ok=True)  # left by an update that crashed
+    try:
+        os.close(os.open(LOCK, os.O_CREAT | os.O_EXCL))  # atomic, so only one of several starting servers wins
+    except FileExistsError:
+        return
+    # Own session and log file: stdin/stdout belong to the MCP client, and the update should outlive this server.
+    log = open(DB.with_name("prophets-update.log"), "w")
+    subprocess.Popen(
+        [sys.executable, str(DB.with_name("fetch.py"))],
+        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--speaker", help="e.g. dallin-h-oaks; leave out to cover everyone")
     speaker = parser.parse_args().speaker
+    if speaker and speaker not in SPEAKERS:
+        sys.exit(f"Unknown speaker '{speaker}'. Choose from: {', '.join(SPEAKERS)}")
     if not DB.exists():
         sys.exit("prophets.db not found. Run `uv run fetch.py` first.")
+    update_if_stale()
     con = sqlite3.connect(DB, check_same_thread=False)
 
     if speaker:

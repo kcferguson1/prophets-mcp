@@ -61,6 +61,12 @@ Then just ask: *"What has President Nelson taught about the gathering of Israel?
 
 **ChatGPT** only connects to MCP servers at a public HTTPS address, so it needs this hosted first. That isn't set up here.
 
+### Staying up to date
+
+New talks arrive on their own. When a server starts and the last full check is more than 30 days old, it runs `fetch.py` in the background and keeps answering while it works. Only one update runs at a time, even with several servers open. Progress goes to `prophets-update.log`.
+
+To update right away, run `uv run fetch.py`. When the roster changes, run `git pull` to get the new speaker list.
+
 ### Tools
 
 | Server | Tool | What it does |
@@ -123,6 +129,7 @@ speaker pages ──▶ talk text ──▶ paragraphs ──▶ search index �
 | 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk, with title, date, source and link |
 | 2. Check | `uv run test_prophets.py` | A self-check of the paragraph reader and the search |
 | 3. Serve | `uv run server.py [--speaker slug]` | An MCP server over stdio, ready for Claude, Cursor or Codex |
+| 4. Update | automatic, monthly | The server reruns step 1 in the background when the index is over 30 days old |
 
 - **Sources.** General Conference talks come from the Church's content API on churchofjesuschrist.org. BYU devotionals and forums come from the BYU Speeches site's data API.
 - **Search.** SQLite's built-in full-text search (FTS5) ranks paragraphs with BM25, a standard way to score how well text matches a question. Porter stemming means "repenting" also finds "repentance". Talk titles count three times as much as body text, and at most two passages come from any one talk, so one long talk can't fill every result.
@@ -131,7 +138,7 @@ speaker pages ──▶ talk text ──▶ paragraphs ──▶ search index �
 ### Files
 
 - [`fetch.py`](fetch.py) downloads the talks and builds the index. Rerunning it skips talks already saved.
-- [`server.py`](server.py) is the MCP server, built on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
+- [`server.py`](server.py) is the MCP server, and it starts the monthly update. It's built on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
 - [`test_prophets.py`](test_prophets.py) is the self-check.
 
 ## Content

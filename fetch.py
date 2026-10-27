@@ -4,6 +4,7 @@ Usage: uv run fetch.py [speaker-slug ...]   (no slugs = everyone; rerunning skip
 """
 import html
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -13,6 +14,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 DB = Path(__file__).with_name("prophets.db")
+LOCK = DB.with_suffix(".updating")  # held by server.py's monthly update while this runs
 CHURCH = "https://www.churchofjesuschrist.org"
 BYU = "https://speeches.byu.edu"
 
@@ -144,6 +146,9 @@ def main():
                 print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
         talks = con.execute("SELECT source, COUNT(DISTINCT url) FROM passages WHERE speaker = ? GROUP BY source", (slug,))
         print("  total:", ", ".join(f"{n} {src}" for src, n in talks) or "nothing")
+    if not sys.argv[1:]:
+        os.utime(DB)  # marks a full check, even when nothing new was found, so the monthly update waits another month
+    LOCK.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

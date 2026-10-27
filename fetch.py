@@ -57,6 +57,38 @@ SPEAKERS = {
     "theresa-a-collins": "Theresa A. Collins",
 }
 
+# Shown by list_speakers so a client knows who's who. Update with SPEAKERS when callings change.
+TWELVE = "Quorum of the Twelve Apostles"
+CALLINGS = {
+    "dallin-h-oaks": "President of the Church",
+    "henry-b-eyring": "First Counselor in the First Presidency",
+    "d-todd-christofferson": "Second Counselor in the First Presidency",
+    "dieter-f-uchtdorf": "Acting President of the Quorum of the Twelve Apostles",
+    "david-a-bednar": TWELVE,
+    "quentin-l-cook": TWELVE,
+    "neil-l-andersen": TWELVE,
+    "ronald-a-rasband": TWELVE,
+    "gary-e-stevenson": TWELVE,
+    "dale-g-renlund": TWELVE,
+    "gerrit-w-gong": TWELVE,
+    "ulisses-soares": TWELVE,
+    "patrick-kearon": TWELVE,
+    "gerald-causse": TWELVE,
+    "clark-g-gilbert": TWELVE,
+    "russell-m-nelson": "17th President of the Church (died 2025)",
+    "jeffrey-r-holland": "President of the Quorum of the Twelve Apostles (died 2025)",
+    "m-russell-ballard": "Acting President of the Quorum of the Twelve Apostles (died 2023)",
+    "camille-n-johnson": "Relief Society General President",
+    "j-anette-dennis": "First Counselor in the Relief Society General Presidency",
+    "kristin-m-yee": "Second Counselor in the Relief Society General Presidency",
+    "emily-belle-freeman": "Young Women General President",
+    "tamara-w-runia": "First Counselor in the Young Women General Presidency",
+    "andrea-munoz-spannaus": "Second Counselor in the Young Women General Presidency",
+    "rosemary-k-chibota": "Primary General President",
+    "nina-m-garfield": "First Counselor in the Primary General Presidency",
+    "theresa-a-collins": "Second Counselor in the Primary General Presidency",
+}
+
 # Counselors read these as procedure; they're lists of names, not teaching.
 SKIP_TITLES = re.compile(r"sustaining of|auditing department|statistical report|solemn assembly|\bexcerpts\b", re.I)
 
@@ -99,16 +131,21 @@ class _Paragraphs(HTMLParser):
         self.found: list[tuple[str | None, str]] = []
         self.current: tuple[str | None, list[str]] | None = None
         self.in_sup = 0
+        self.in_note = False
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        if tag == "p" and not SKIP_P_CLASSES & set((a.get("class") or "").split()) and not (a.get("id") or "").startswith(SKIP_P_IDS):
+        if tag == "li" and (a.get("id") or "").startswith("note"):
+            self.in_note = True  # newer talks put footnote paragraphs, with random ids, inside <li id="note5">
+        elif tag == "p" and not self.in_note and not SKIP_P_CLASSES & set((a.get("class") or "").split()) and not (a.get("id") or "").startswith(SKIP_P_IDS):
             self.current = (a.get("id"), [])
         elif tag == "sup":  # footnote markers
             self.in_sup += 1
 
     def handle_endtag(self, tag):
-        if tag == "sup" and self.in_sup:
+        if tag == "li":
+            self.in_note = False
+        elif tag == "sup" and self.in_sup:
             self.in_sup -= 1
         elif tag == "p" and self.current:
             text = " ".join("".join(self.current[1]).split())
@@ -132,19 +169,33 @@ def text_of(fragment: str) -> str:
     return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())  # split() also folds non-breaking spaces
 
 
-def author(data: dict) -> str | None:
-    """Slug of the speaker who wrote a Gospel Library page, if it's one of ours."""
+HONORIFICS = re.compile(r"\b(?:By|With|President|Elder|Sister|Brother|Bishop)\s+|\s+of the [A-Z][\w ]*?(?= and |,|$)")  # titles, "of the Quorum…"
+
+
+def credits(data: dict) -> tuple[list[str], str] | None:
+    """(our speakers on a Gospel Library page, the name to show for it), or None if none of ours spoke.
+
+    A joint talk or panel shows everyone ("Russell M. Nelson and Wendy W. Nelson"), because its text isn't marked by
+    speaker and no quote should be pinned on one person. Bylines decide when there are any: the page data often names
+    only the first speaker, and sometimes the wrong person.
+    """
+    found = (text_of(b) for b in re.findall(r'class="author-name"[^>]*>(.*?)</p>', data["content"]["body"], re.S))
+    bylines = list(dict.fromkeys(b for b in found if b))  # some pages repeat one byline
     try:
         who = json.loads(data["meta"]["structuredData"])["mainEntity"]["author"]
     except (KeyError, TypeError, ValueError):
-        who = {}
-    if isinstance(who, list):
-        who = who[0] if who else {}
-    slug = str(who.get("url", "") if isinstance(who, dict) else "").rsplit("/", 1)[-1]
-    if slug in SPEAKERS:
-        return slug
-    byline = text_of(" ".join(re.findall(r'class="author-name"[^>]*>(.*?)</p>', data["content"]["body"], re.S)))
-    return next((s for s, name in SPEAKERS.items() if name in byline), None)
+        who = []
+    people = [p for p in (who if isinstance(who, list) else [who]) if isinstance(p, dict)]
+    if bylines:
+        shown = " and ".join(HONORIFICS.sub("", b).strip() for b in bylines)
+        ours = [s for s, name in SPEAKERS.items() if name in shown]
+    else:
+        shown = " and ".join(p["name"] for p in people if p.get("name"))
+        ours = [s for s in (str(p.get("url", "")).rsplit("/", 1)[-1] for p in people) if s in SPEAKERS]
+    if not ours:
+        return None
+    joint = len(bylines) > 1 or len(people) > 1 or re.search(r",|\band\b|&", shown)
+    return ours, shown if joint else SPEAKERS[ours[0]]
 
 
 def connect(path=DB) -> sqlite3.Connection:
@@ -201,21 +252,21 @@ def walk(uri: str):
 
 
 def record(uri: str, label: str, data: dict | None = None):
-    """(speaker, source, title, date, url, paragraphs) for a page by one of ours, or None."""
+    """(our speakers, name shown, source, title, date, url, paragraphs) for a page by one of ours, or None."""
     try:
         data = data or api("content", uri)
     except urllib.error.HTTPError:
         return None  # video-only or moved pages
     body = data["content"]["body"]
-    slug = author(data)
+    who = credits(data)
     paras = paragraphs(body)
-    if not slug or sum(len(t.split()) for _, t in paras) < MIN_WORDS or SKIP_TITLES.search(data["meta"]["title"]):
+    if not who or sum(len(t.split()) for _, t in paras) < MIN_WORDS or SKIP_TITLES.search(data["meta"]["title"]):
         return None
     if re.search(r'class="title-number"[^>]*>[^<]*Session', body):
         return None  # an excerpt of a conference talk, which we already have in full
     when = re.search(r"/(\d{4})/(\d{2})", uri)
     date = "-".join(when.groups()) if when else ""
-    return slug, label, data["meta"]["title"], date, f"{CHURCH}/study{uri}?lang=eng", paras
+    return *who, label, data["meta"]["title"], date, f"{CHURCH}/study{uri}?lang=eng", paras
 
 
 def settled(year: str, month: str) -> bool:
@@ -303,12 +354,22 @@ def reprint(con, slug, src, title, date) -> bool:
     return any(0 <= months(date) - months(d) <= 3 for (d,) in rows)
 
 
-def save(con, slug, src, title, date, url, paras):
+def save(con, slug, src, title, date, url, paras, shown=None):
+    """Store a talk under one of our speakers; shown names everyone on a joint talk."""
+    shown = shown or SPEAKERS[slug]
     con.executemany(
         "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",
-        [(title, text, slug, SPEAKERS[slug], src, date, url, anchor) for anchor, text in paras],
+        [(title, text, slug, shown, src, date, url, anchor) for anchor, text in paras],
     )
-    print(f"  {date}  {SPEAKERS[slug]}: {title}  ({len(paras)} paragraphs)")
+    print(f"  {date}  {shown}: {title}  ({len(paras)} paragraphs)")
+
+
+def save_record(con, hit):
+    """Save a record() result under each of our speakers on it, skipping magazine reprints of their conference talks."""
+    slugs, shown, src, title, date, url, paras = hit
+    for slug in slugs:
+        if not reprint(con, slug, src, title, date):
+            save(con, slug, src, title, date, url, paras, shown)
 
 
 def main():
@@ -346,8 +407,8 @@ def main():
             print(source.__name__.capitalize())
             try:
                 for uri, hit in source(seen):
-                    if hit and not reprint(con, *hit[:4]):
-                        save(con, *hit)
+                    if hit:
+                        save_record(con, hit)
                     if uri:
                         seen.add(uri)
                         con.execute("INSERT OR IGNORE INTO seen VALUES (?)", (uri,))

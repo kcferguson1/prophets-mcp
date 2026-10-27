@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from fetch import CHECKED, DB, LOCK, SPEAKERS, connect
+from fetch import CALLINGS, CHECKED, DB, LOCK, SPEAKERS, connect
 
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
 MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
@@ -41,10 +41,12 @@ def search_passages(con: sqlite3.Connection, query: str, speaker: str | None, li
         (match, speaker, speaker, limit * 20),
     ).fetchall()
     per_talk: dict[str, int] = {}
+    shown: set[tuple[str, str]] = set()  # a joint talk is stored once per speaker; show each paragraph once
     out = []
     for name, title, source, date, url, anchor, text in rows:
-        if per_talk.get(url, 0) >= MAX_PER_TALK or len(text.split()) < MIN_WORDS:
+        if per_talk.get(url, 0) >= MAX_PER_TALK or len(text.split()) < MIN_WORDS or (url, text) in shown:
             continue
+        shown.add((url, text))
         per_talk[url] = per_talk.get(url, 0) + 1
         link = f"{url}&id={anchor}#{anchor}" if anchor else url  # conference links jump to the paragraph
         out.append(f'## {len(out) + 1}. {name}, "{title}"\n{source}, {date}\nSource: {link}\n\n{text}')
@@ -93,7 +95,7 @@ def main():
 
     if speaker:
         name = SPEAKERS[speaker]
-        mcp = MCPServer(name, instructions=f"Searches {name}'s General Conference talks, devotionals, magazine articles and BYU speeches. {CITE}")
+        mcp = MCPServer(name, instructions=f"Searches the General Conference talks, devotionals, magazine articles and BYU speeches of {name}, {CALLINGS[speaker]}. {CITE}")
 
         @mcp.tool(description=f"Search {name}'s General Conference talks, devotionals, magazine articles and BYU speeches. Returns passages in the speaker's own words, each with title, date and source link. {CITE}")
         def search(query: str, limit: int = 8) -> str:
@@ -110,10 +112,13 @@ def main():
         def search(query: str, speaker: str | None = None, limit: int = 8) -> str:
             return search_passages(con, query, speaker, max(1, min(limit, 20)))
 
-        @mcp.tool(description="List the speakers (with the slug to pass to search) and how many talks each has.")
+        @mcp.tool(description="List every speaker with their calling, the slug to pass to search, and how many talks and articles each has.")
         def list_speakers() -> str:
-            rows = con.execute("SELECT speaker, name, COUNT(DISTINCT url) FROM passages GROUP BY speaker ORDER BY name")
-            return "\n".join(f"- {name} (slug: {slug}): {n} talks" for slug, name, n in rows)
+            counts = dict(con.execute("SELECT speaker, COUNT(DISTINCT url) FROM passages GROUP BY speaker"))
+            return "\n".join(
+                f"- {name}, {CALLINGS[slug]} (slug: {slug}): " + (f"{counts[slug]} talks and articles" if counts.get(slug) else "no talks yet")
+                for slug, name in SPEAKERS.items()
+            )
 
         @mcp.tool(description="List every talk and speech for one speaker slug, newest first.")
         def list_talks(speaker: str) -> str:

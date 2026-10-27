@@ -18,7 +18,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 DB = Path(os.environ.get("PROPHETS_DB") or Path(__file__).with_name("prophets.db"))  # hosts point this at a disk
-LOCK = DB.with_suffix(".updating")  # held by server.py's monthly update while this runs
+LOCK = DB.with_suffix(".updating")  # locked (not just present) while an update runs; see hold_lock
 CHECKED = DB.with_suffix(".checked")  # touched only when a full run finishes cleanly
 CHURCH = "https://www.churchofjesuschrist.org"
 API = f"{CHURCH}/study/api/v3/language-pages/type"
@@ -103,6 +103,26 @@ SKIP_P_CLASSES = {"author-name", "author-role", "reference", "series-title", "su
 SKIP_P_IDS = ("note", "figure")  # footnotes and image captions
 
 
+def hold_lock():
+    """Take the update lock and return its open file, or None if another update holds it.
+
+    It's an operating-system lock on the file, so it's freed the moment the holder exits, even after a crash.
+    Keep the returned file open for as long as the update runs.
+    """
+    f = open(LOCK, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
 def get(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh) the-prophets-mcp"})
     for attempt in range(3):
@@ -110,14 +130,30 @@ def get(url: str) -> str:
             with urllib.request.urlopen(req, timeout=30) as r:
                 body = r.read().decode()
             break
-        except urllib.error.HTTPError:
-            raise  # a real answer from the site, like 404; retrying won't change it
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt == 2:
+                raise  # a real answer like 404 won't change; a server error (5xx) may pass, so it's retried
+            time.sleep(10 * (attempt + 1))
         except OSError:  # timeouts and dropped connections
             if attempt == 2:
                 raise
             time.sleep(10 * (attempt + 1))
     time.sleep(0.3)  # be polite to both sites
     return body
+
+
+def page(uri: str) -> dict | None:
+    """A Gospel Library page's data; None if it's gone (404) or has no text. Other errors stop the run, to retry later."""
+    try:
+        data = api("content", uri)
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 410):
+            return None
+        raise
+    if not isinstance(data.get("content"), dict) or not isinstance(data["content"].get("body"), str):
+        print(f"  ! skipped a page with no text: {uri}", file=sys.stderr)
+        return None
+    return data
 
 
 def api(kind: str, uri: str) -> dict:
@@ -212,20 +248,20 @@ def connect(path=DB) -> sqlite3.Connection:
 
 
 def conference(slug: str, done: set[str]):
-    page = get(f"{CHURCH}/study/general-conference/speakers/{slug}?lang=eng")
-    for path in sorted(set(re.findall(r'href="/study/general-conference/(\d{4}/\d{2}/[^"?]+)"', page))):
+    listing = get(f"{CHURCH}/study/general-conference/speakers/{slug}?lang=eng")
+    for path in sorted(set(re.findall(r'href="/study/general-conference/(\d{4}/\d{2}/[^"?]+)"', listing))):
         url = f"{CHURCH}/study/general-conference/{path}?lang=eng"
         if url in done:
             continue
-        data = api("content", f"/general-conference/{path}")
-        title = data["meta"]["title"]
-        if not SKIP_TITLES.search(title):
+        data = page(f"/general-conference/{path}")
+        title = (data or {}).get("meta", {}).get("title", "")
+        if data and title and not SKIP_TITLES.search(title):
             yield "General Conference", title, path[:7].replace("/", "-"), url, paragraphs(data["content"]["body"])
 
 
 def byu(slug: str, done: set[str]):
-    page = get(f"{BYU}/speakers/{slug}/")
-    for talk in sorted(set(re.findall(rf'href="{BYU}/talks/{slug}/([^/"?]+)/', page))):
+    listing = get(f"{BYU}/speakers/{slug}/")
+    for talk in sorted(set(re.findall(rf'href="{BYU}/talks/{slug}/([^/"?]+)/', listing))):
         url = f"{BYU}/talks/{slug}/{talk}/"
         if url in done:
             continue
@@ -237,59 +273,70 @@ def byu(slug: str, done: set[str]):
         yield "BYU Speeches", html.unescape(hit["title"]["rendered"]), hit["date"][:10], url, paragraphs(hit["content"]["rendered"])
 
 
-def walk(uri: str):
-    """Every item uri under a Gospel Library collection, following sub-collections."""
+def walk(uri: str, top: bool = True):
+    """Every item uri under a Gospel Library collection, following sub-collections.
+
+    A missing sub-collection is skipped. A missing top collection stops the run: it means the Church moved the
+    listing, and finishing "successfully" would hide that no new talks can be found.
+    """
     try:
         listing = api("dynamic", uri)["collection"]
-    except urllib.error.HTTPError:
-        return  # an empty or retired collection
+    except urllib.error.HTTPError as e:
+        if e.code == 404 and not top:
+            return
+        raise
     for section in listing.get("sections", []):
         for entry in section.get("entries", []):
             if entry.get("type") == "collection":
-                yield from walk(entry["uri"])
+                yield from walk(entry["uri"], top=False)
             else:
                 yield entry["uri"]
 
 
 def record(uri: str, label: str, data: dict | None = None):
     """(our speakers, name shown, source, title, date, url, paragraphs) for a page by one of ours, or None."""
+    data = data or page(uri)
+    if not data:
+        return None
     try:
-        data = data or api("content", uri)
-    except urllib.error.HTTPError:
-        return None  # video-only or moved pages
-    body = data["content"]["body"]
-    who = credits(data)
+        body, title = data["content"]["body"], data["meta"]["title"]
+        who = credits(data)
+    except (KeyError, TypeError, ValueError, AttributeError) as e:  # one odd page shouldn't stop the whole source
+        print(f"  ! skipped an unreadable page: {uri} ({e!r})", file=sys.stderr)
+        return None
     paras = paragraphs(body)
-    if not who or sum(len(t.split()) for _, t in paras) < MIN_WORDS or SKIP_TITLES.search(data["meta"]["title"]):
+    if not who or sum(len(t.split()) for _, t in paras) < MIN_WORDS or SKIP_TITLES.search(title):
         return None
     if re.search(r'class="title-number"[^>]*>[^<]*Session', body):
         return None  # an excerpt of a conference talk, which we already have in full
     when = re.search(r"/(\d{4})/(\d{2})", uri)
     date = "-".join(when.groups()) if when else ""
-    return *who, label, data["meta"]["title"], date, f"{CHURCH}/study{uri}?lang=eng", paras
+    return *who, label, title, date, f"{CHURCH}/study{uri}?lang=eng", paras
 
 
-def settled(year: str, month: str) -> bool:
-    """True once a conference or issue is two months old, so its listing won't change and needn't be read again."""
-    return f"{year}/{month}" < time.strftime("%Y/%m", time.localtime(time.time() - 62 * 86400))
+def recent(uri: str) -> bool:
+    """True for a page dated in the last two months. Its listing or text may still change (a devotional posted as
+    video gets its transcript later; digital-only articles join an issue late), so it's checked again next run."""
+    when = re.search(r"/(\d{4})/(\d{2})", uri)
+    return bool(when) and f"{when[1]}/{when[2]}" >= time.strftime("%Y/%m", time.localtime(time.time() - 62 * 86400))
 
 
 def conference_tocs(seen: set[str]):
-    """Every General Conference table of contents, the official list of who spoke; catches talks a speaker page misses."""
+    """Every General Conference table of contents, the official list of who spoke; catches talks a speaker page misses.
+    Yields (uri to mark seen, record or None)."""
     for year in range(1971, int(time.strftime("%Y")) + 1):
         for month in ("04", "10"):
             toc = f"/general-conference/{year}/{month}"
             if toc in seen:
                 continue
-            try:
-                body = api("content", toc)["content"]["body"]
-            except urllib.error.HTTPError:
+            data = page(toc)
+            if not data:
                 continue  # a conference not held yet
-            for uri, inner in re.findall(r'<a href="/study(/general-conference/\d{4}/\d{2}/[^"?#]+)[^>]*>(.*?)</a>', body, re.S):
+            for uri, inner in re.findall(r'<a href="/study(/general-conference/\d{4}/\d{2}/[^"?#]+)[^>]*>(.*?)</a>', data["content"]["body"], re.S):
                 byline = text_of(" ".join(re.findall(r'class="primaryMeta"[^>]*>(.*?)</p>', inner, re.S)))
                 if uri not in seen and any(name in byline for name in SPEAKERS.values()):
                     yield uri, record(uri, "General Conference")
-            yield (toc if settled(str(year), month) else None), None
+            yield toc, None
 
 
 def broadcasts(seen: set[str]):
@@ -297,9 +344,8 @@ def broadcasts(seen: set[str]):
     for event in walk(BROADCASTS_ROOT):
         if not event.startswith("/broadcasts/") or event in seen:
             continue
-        try:
-            data = api("content", event)
-        except urllib.error.HTTPError:
+        data = page(event)
+        if not data:
             yield event, None  # single-talk events that only redirect on the website
             continue
         talks = sorted({t for t in re.findall(r'href="/study(/broadcasts/[^"?#]+)', data["content"]["body"]) if t.startswith(event + "/")})
@@ -328,15 +374,13 @@ def magazines(seen: set[str]):
             # Before 2021 the Liahona was an international edition that reprinted the Ensign and New Era.
             if not m or issue in seen or (m[1] == "liahona" and int(m[2]) < 2021):
                 continue
-            try:
-                body = api("content", issue)["content"]["body"]
-            except urllib.error.HTTPError:
+            data = page(issue)
+            if not data:
                 continue
-            for uri in magazine_articles(body):
+            for uri in magazine_articles(data["content"]["body"]):
                 if uri not in seen:
                     yield uri, record(uri, MAGAZINES[m[1]])
-            # Recent issues are checked again next month, for digital-only articles added late.
-            yield (issue if settled(m[2], m[3]) else None), None
+            yield issue, None
 
 
 def months(date: str) -> int:
@@ -376,6 +420,9 @@ def main():
     slugs = sys.argv[1:] or list(SPEAKERS)
     if unknown := [s for s in slugs if s not in SPEAKERS]:
         sys.exit(f"Unknown speaker(s): {', '.join(unknown)}. Choose from: {', '.join(SPEAKERS)}")
+    lock = hold_lock()  # held until this process exits
+    if lock is None:
+        sys.exit("Another update is already running. Try again when it finishes.")
     con = connect()
     done = {url for (url,) in con.execute("SELECT DISTINCT url FROM passages")}
     failed = False
@@ -410,15 +457,15 @@ def main():
                     if hit:
                         save_record(con, hit)
                     if uri:
-                        seen.add(uri)
-                        con.execute("INSERT OR IGNORE INTO seen VALUES (?)", (uri,))
+                        seen.add(uri)  # not again this run, either way
+                        if hit or not recent(uri):  # a recent page may still change, so only remember it once saved
+                            con.execute("INSERT OR IGNORE INTO seen VALUES (?)", (uri,))
                     con.commit()
             except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
                 print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
                 failed = True
         if not failed:
             CHECKED.touch()  # the monthly update waits another month; a cut-off or failed run never gets here, so it retries
-    LOCK.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

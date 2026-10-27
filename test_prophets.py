@@ -1,8 +1,64 @@
-"""Self-check for the parser, author matching and search. Run: uv run test_prophets.py"""
+"""Self-check for the parser, author matching, search and update safety. Run: uv run test_prophets.py"""
 import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
 
-from fetch import CALLINGS, SPEAKERS, connect, credits, magazine_articles, paragraphs, reprint
-from server import search_passages
+os.environ["PROPHETS_DB"] = os.path.join(tempfile.mkdtemp(), "prophets.db")  # never touch the real index or lock
+
+import fetch  # noqa: E402
+from fetch import CALLINGS, SPEAKERS, connect, credits, hold_lock, magazine_articles, page, paragraphs, recent, record, reprint, walk  # noqa: E402
+from server import search_passages  # noqa: E402
+
+# The update lock: one holder at a time, and the operating system frees it when the holder exits, even on a crash.
+first = hold_lock()
+assert first is not None and hold_lock() is None
+first.close()
+holder = "import fetch, sys, time; lock = fetch.hold_lock(); print('locked' if lock else 'busy', flush=True); time.sleep(60)"
+child = subprocess.Popen([sys.executable, "-c", holder], cwd=os.path.dirname(os.path.abspath(fetch.__file__)), env=os.environ, stdout=subprocess.PIPE, text=True)
+assert child.stdout.readline().strip() == "locked"
+assert hold_lock() is None, "another process's update must block this one"
+child.kill()  # like a crash: no cleanup runs
+child.wait()
+again = hold_lock()
+assert again is not None, "a crashed update must not leave the lock held"
+again.close()
+
+# Only "not found" means a page is gone; a server error stops the run so it's retried, instead of skipping the page forever.
+def fake_api(error=None, data=None):
+    def api(kind, uri):
+        if error:
+            raise urllib.error.HTTPError(uri, error, "test", None, None)
+        return data
+    return api
+
+real_api = fetch.api
+fetch.api = fake_api(404)
+assert page("/gone") is None
+assert list(walk("/magazines/x/2020", top=False)) == []  # a missing sub-listing is skipped
+try:
+    list(walk("/magazines/moved"))
+    raise AssertionError("a missing top listing must stop the run")
+except urllib.error.HTTPError:
+    pass
+fetch.api = fake_api(503)
+try:
+    page("/busy")
+    raise AssertionError("a server error must stop the run")
+except urllib.error.HTTPError:
+    pass
+fetch.api = fake_api(data={"meta": {}})
+assert page("/odd") is None  # a page with no text is skipped
+fetch.api = real_api
+assert record("/liahona/2025/01/odd", "Liahona", {"meta": {}, "content": {"body": "<p>x</p>"}}) is None  # no title: skipped, no crash
+
+# Pages from the last two months may still change, so they're checked again; older ones aren't.
+assert recent(time.strftime("/broadcasts/x/%Y/%m/talk"))
+assert not recent("/ensign/2005/06/peace-in-our-savior")
+assert not recent("/broadcasts/x/undated")
 
 body = '<p class="author-name" id="a">By President X</p><p id="p_1">Faith in Jesus<sup class="marker">1</sup> Christ &amp; hope.</p><p id="p_2"> </p><p id="note_title1">Notes</p><p id="note1_p1">See Mosiah 3:19.</p><p id="figure1_p1">Photo caption</p>'
 assert paragraphs(body) == [("p_1", "Faith in Jesus Christ & hope.")], paragraphs(body)

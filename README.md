@@ -63,7 +63,7 @@ Then just ask: *"What has Sister Camille N. Johnson taught about finding relief 
 
 ### Staying up to date
 
-New talks arrive on their own. When a server starts and the last full check is more than 30 days old, it runs `fetch.py` in the background and keeps answering while it works. Only one update runs at a time, even with several servers open. Progress goes to `prophets-update.log`.
+New talks arrive on their own. When a server starts and the last full check is more than 30 days old, it runs `fetch.py` in the background and keeps answering while it works. Only one update runs at a time, even with several servers open or while you run `fetch.py` yourself; a second one says so and exits. Progress goes to `prophets-update.log`.
 
 To update right away, run `uv run fetch.py`. When the roster changes, run `git pull` to get the new speaker list.
 

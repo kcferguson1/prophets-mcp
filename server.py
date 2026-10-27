@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from fetch import CALLINGS, CHECKED, DB, LOCK, SPEAKERS, connect
+from fetch import CALLINGS, CHECKED, DB, SPEAKERS, connect, hold_lock
 
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
 MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
@@ -68,14 +68,14 @@ def update_if_stale():
     """Fetch new talks in the background when there's no finished full check from the last month (or none at all)."""
     if CHECKED.exists() and time.time() - CHECKED.stat().st_mtime < UPDATE_EVERY:
         return
-    if LOCK.exists() and time.time() - LOCK.stat().st_mtime > 2 * HOUR:
-        LOCK.unlink(missing_ok=True)  # left by an update that crashed or was cut off; a full run takes about 25 minutes
-    try:
-        os.close(os.open(LOCK, os.O_CREAT | os.O_EXCL))  # atomic, so only one of several starting servers wins
-    except FileExistsError:
-        return
+    lock = hold_lock()
+    if lock is None:
+        return  # an update is already running
+    # fetch.py takes the lock for itself; if several starting servers each launch one, all but one exit at once.
+    lock.close()
     # Own session and log file: stdin/stdout belong to the MCP client, and the update should outlive this server.
-    log = open(DB.with_name("prophets-update.log"), "w")
+    # Appended, so a later server can't wipe the log of the update that's running.
+    log = open(DB.with_name("prophets-update.log"), "a")
     subprocess.Popen(
         [sys.executable, str(Path(__file__).with_name("fetch.py"))],
         stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,

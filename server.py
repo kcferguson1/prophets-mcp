@@ -16,6 +16,12 @@ from mcp.server.mcpserver import MCPServer
 from fetch import CHECKED, DB, LOCK, SPEAKERS, connect
 
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
+MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
+FILLER = set(
+    "a about am an and are as at be but by can could did do does for from has have he her his how i if in into is it its "
+    "me my not of on or our she should so than that the their them then there these they this to was we were what when "
+    "where which who why will with would you your".split()
+)
 HOUR = 3600
 UPDATE_EVERY = 30 * 24 * HOUR
 CITE = "Quote passages in the speaker's own words and cite each one with its Source link, title and date."
@@ -25,25 +31,26 @@ def search_passages(con: sqlite3.Connection, query: str, speaker: str | None, li
     terms = re.findall(r"\w+", query)
     if not terms:
         return "Give a few words to search for."
+    terms = [t for t in terms if t.lower() not in FILLER] or terms  # all filler ("how do I")? search it as typed
     # Quote each word so FTS5 never reads the user's text as query syntax.
     match = " OR ".join(f'"{t}"' for t in terms)
     rows = con.execute(
         """SELECT name, title, source, date, url, anchor, text FROM passages
            WHERE passages MATCH ? AND (? IS NULL OR speaker = ?)
            ORDER BY bm25(passages, 1.0, 1.0) LIMIT ?""",  # heavier title weight let any paragraph of a matching talk win
-        (match, speaker, speaker, limit * 10),
+        (match, speaker, speaker, limit * 20),
     ).fetchall()
     per_talk: dict[str, int] = {}
     out = []
     for name, title, source, date, url, anchor, text in rows:
-        if per_talk.get(url, 0) >= MAX_PER_TALK:
+        if per_talk.get(url, 0) >= MAX_PER_TALK or len(text.split()) < MIN_WORDS:
             continue
         per_talk[url] = per_talk.get(url, 0) + 1
         link = f"{url}&id={anchor}#{anchor}" if anchor else url  # conference links jump to the paragraph
         out.append(f'## {len(out) + 1}. {name}, "{title}"\n{source}, {date}\nSource: {link}\n\n{text}')
         if len(out) == limit:
             break
-    return "\n\n---\n\n".join(out) or f'Nothing matched "{query}". Try other words, or call list_sources.'
+    return "\n\n---\n\n".join(out) or f'Nothing matched "{query}". Try other words, or call list_talks.'
 
 
 def list_sources(con: sqlite3.Connection, speaker: str | None) -> str:

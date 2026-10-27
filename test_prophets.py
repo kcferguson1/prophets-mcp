@@ -27,18 +27,23 @@ oaks = ("dallin-h-oaks", "Dallin H. Oaks", "General Conference", "2025-10", "htt
 con.executemany(
     "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",
     [
-        ("Talk A", "Repentance brings joy.", *oaks, "p_1"),
-        ("Talk A", "Joy comes through repentance.", *oaks, "p_2"),
-        ("Talk A", "Repentance is a daily joy.", *oaks, "p_3"),
-        ("Talk B", "Repentance and joy.", "henry-b-eyring", "Henry B. Eyring", "BYU Speeches", "1990-01-01", "https://y/b/", None),
+        ("Talk A", "Repentance brings a deep and lasting joy to every one of us.", *oaks, "p_1"),
+        ("Talk A", "Joy comes to all of us through sincere and daily repentance.", *oaks, "p_2"),
+        ("Talk A", "Repentance is a daily joy we can choose again and again.", *oaks, "p_3"),
+        ("Talk A", "Repentance brings joy.", *oaks, "p_4"),  # too short to be a useful passage
+        ("Talk C", "I am with you.", *oaks[:4], "https://x/c?lang=eng", "p_1"),
+        ("Talk B", "Repentance and joy belong together in the life of a disciple.", "henry-b-eyring", "Henry B. Eyring", "BYU Speeches", "1990-01-01", "https://y/b/", None),
     ],
 )
 out = search_passages(con, 'repenting "joy" OR -', "dallin-h-oaks")
-assert "Source: https://x/a?lang=eng&id=p_1#p_1" in out, out
+assert "Source: https://x/a?lang=eng&id=p_2#p_2" in out, out  # conference links jump to the paragraph
 assert out.count("## ") == 2, out  # at most two passages per talk
+assert "p_4" not in out, out  # short paragraphs are skipped
 assert "Eyring" not in out, out  # speaker filter
 assert "Source: https://y/b/\n" in search_passages(con, "joy", "henry-b-eyring")  # no anchor, plain link
 assert "Nothing matched" in search_passages(con, "zzz", None)
+assert "Nothing matched" in search_passages(con, "with you", None)  # filler words alone don't match "I am with you."
+assert "we can choose" in search_passages(con, "we can", "dallin-h-oaks")  # all filler: searched as typed
 
 # A magazine's reprint of a conference talk is skipped; a broadcast with the same title, or a much later article, is not.
 assert reprint(con, "dallin-h-oaks", "Liahona", "Talk A", "2025-11")

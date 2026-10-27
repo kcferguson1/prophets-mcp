@@ -1,76 +1,146 @@
+<div align="center">
+
 # The Prophets
 
-Searchable MCP servers built from the General Conference talks and BYU speeches of the First Presidency and the Quorum of the Twelve Apostles. Every passage comes back in the speaker's own words, with the talk title, date and a source link (conference links jump to the exact paragraph).
+**Prophets and apostles of The Church of Jesus Christ of Latter-day Saints, in an MCP.**
 
-Runs locally for personal study.
+The First Presidency and the Quorum of the Twelve, each turned into a searchable MCP server built from their General Conference talks and BYU speeches.<br>
+Add one to Claude, Cursor or Codex. Every answer cites its source.
 
-## Setup
+[Use it](#use-it-in-a-few-minutes) · [The speakers](#the-speakers) · [How it works](#how-it-works) · [Content](#content)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-1f6feb.svg)](LICENSE)
+[![Speakers](https://img.shields.io/badge/speakers-18-202020.svg)](#the-speakers)
+[![Talks](https://img.shields.io/badge/talks-1%2C078-202020.svg)](#the-speakers)
+[![MCP](https://img.shields.io/badge/MCP-stdio-4a4a4a.svg)](https://modelcontextprotocol.io)
+
+</div>
+
+---
+
+## Use it in a few minutes
+
+You need [uv](https://docs.astral.sh/uv/), the Python package manager.
 
 ```bash
+git clone https://github.com/kcferguson1/prophets-mcp.git
+cd prophets-mcp
 uv sync
-uv run fetch.py              # downloads every speaker into prophets.db (rerun any time; it skips what's saved)
-uv run fetch.py dallin-h-oaks  # or just one speaker
-uv run test_prophets.py      # self-check
+uv run fetch.py      # downloads every talk into prophets.db (about 20 minutes; rerun any time, it skips what's saved)
 ```
 
-## Speakers
+Then add a server from inside the folder. Leave out `--speaker` to get all eighteen speakers in one server.
 
-| Slug | Name |
-|---|---|
-| `dallin-h-oaks` | Dallin H. Oaks |
-| `henry-b-eyring` | Henry B. Eyring |
-| `d-todd-christofferson` | D. Todd Christofferson |
-| `dieter-f-uchtdorf` | Dieter F. Uchtdorf |
-| `david-a-bednar` | David A. Bednar |
-| `quentin-l-cook` | Quentin L. Cook |
-| `neil-l-andersen` | Neil L. Andersen |
-| `ronald-a-rasband` | Ronald A. Rasband |
-| `gary-e-stevenson` | Gary E. Stevenson |
-| `dale-g-renlund` | Dale G. Renlund |
-| `gerrit-w-gong` | Gerrit W. Gong |
-| `ulisses-soares` | Ulisses Soares |
-| `patrick-kearon` | Patrick Kearon |
-| `gerald-causse` | Gérald Caussé |
-| `clark-g-gilbert` | Clark G. Gilbert |
-| `russell-m-nelson` | Russell M. Nelson (died 2025) |
-| `jeffrey-r-holland` | Jeffrey R. Holland (died 2025) |
-| `m-russell-ballard` | M. Russell Ballard (died 2023) |
-
-Roster as of March 2026, plus apostles who died since October 2021. When callings change, edit `SPEAKERS` in `fetch.py` and rerun it.
-
-## Tools
-
-One apostle (`--speaker <slug>`): `search(query, limit)`, `list_talks()`.
-Everyone (no `--speaker`): `search(query, speaker?, limit)`, `list_speakers()`, `list_talks(speaker)`.
-
-## Add to a client
-
-Replace `/path/to/the_prophets` with this folder's full path. Drop `--speaker ...` to get everyone in one server.
-
-**Claude Code**
 ```bash
-claude mcp add oaks -- uv run --directory /path/to/the_prophets server.py --speaker dallin-h-oaks
+# Claude Code: everyone
+claude mcp add --scope user prophets -- uv run --directory "$PWD" server.py
+
+# Claude Code: one apostle
+claude mcp add oaks -- uv run --directory "$PWD" server.py --speaker dallin-h-oaks
 ```
 
-**Codex**
 ```bash
-codex mcp add oaks -- uv run --directory /path/to/the_prophets server.py --speaker dallin-h-oaks
+# Codex
+codex mcp add prophets -- uv run --directory "$PWD" server.py
 ```
 
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`) and **Cursor** (`~/.cursor/mcp.json`):
+In **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`) and **Cursor** (`~/.cursor/mcp.json`), add it with the folder's full path:
+
 ```json
 {
   "mcpServers": {
-    "oaks": {
+    "prophets": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/the_prophets", "server.py", "--speaker", "dallin-h-oaks"]
+      "args": ["run", "--directory", "/full/path/to/prophets-mcp", "server.py"]
     }
   }
 }
 ```
 
-**ChatGPT** only connects to servers at a public HTTPS address, so it needs this hosted somewhere first (not set up here).
+Then just ask: *"What has President Nelson taught about the gathering of Israel?"* or *"How does Elder Bednar explain the power of the Atonement?"*
+
+**ChatGPT** only connects to MCP servers at a public HTTPS address, so it needs this hosted first. That isn't set up here.
+
+### Tools
+
+| Server | Tool | What it does |
+|---|---|---|
+| One apostle (`--speaker <slug>`) | `search(query, limit)` | Searches his talks and returns passages in his own words, each with title, date and source link |
+| | `list_talks()` | Lists every talk and speech in his collection, newest first |
+| Everyone (no `--speaker`) | `search(query, speaker?, limit)` | Searches all speakers, or one if you pass a slug |
+| | `list_speakers()` | Lists every speaker, his slug and how many talks he has |
+| | `list_talks(speaker)` | Lists one speaker's talks, newest first |
+
+### What an answer looks like
+
+```text
+## 1. Clark G. Gilbert, "Come Home"
+General Conference, 2026-04
+Source: https://www.churchofjesuschrist.org/study/general-conference/2026/04/15gilbert?lang=eng&id=p_vO6YV#p_vO6YV
+
+Come home! Come home! Ye who are weary, come home!
+```
+
+Conference links jump straight to the quoted paragraph. BYU links open the speech.
+
+## The speakers
+
+| Speaker | Slug | Calling | Apostle since | Conference talks | BYU speeches | Passages |
+|---|---|---|---|---|---|---|
+| Dallin H. Oaks | `dallin-h-oaks` | President of the Church | 1984 | 99 | 33 | 6,201 |
+| Henry B. Eyring | `henry-b-eyring` | First Counselor in the First Presidency | 1995 | 106 | 20 | 6,068 |
+| D. Todd Christofferson | `d-todd-christofferson` | Second Counselor in the First Presidency | 2008 | 44 | 12 | 3,007 |
+| Dieter F. Uchtdorf | `dieter-f-uchtdorf` | Acting President of the Quorum of the Twelve | 2004 | 75 | 6 | 5,399 |
+| David A. Bednar | `david-a-bednar` | Quorum of the Twelve | 2004 | 45 | 10 | 2,933 |
+| Quentin L. Cook | `quentin-l-cook` | Quorum of the Twelve | 2007 | 41 | 7 | 3,047 |
+| Neil L. Andersen | `neil-l-andersen` | Quorum of the Twelve | 2009 | 41 | 10 | 3,539 |
+| Ronald A. Rasband | `ronald-a-rasband` | Quorum of the Twelve | 2015 | 29 | 7 | 2,024 |
+| Gary E. Stevenson | `gary-e-stevenson` | Quorum of the Twelve | 2015 | 26 | 4 | 1,609 |
+| Dale G. Renlund | `dale-g-renlund` | Quorum of the Twelve | 2015 | 25 | 6 | 1,773 |
+| Gerrit W. Gong | `gerrit-w-gong` | Quorum of the Twelve | 2018 | 20 | 7 | 1,934 |
+| Ulisses Soares | `ulisses-soares` | Quorum of the Twelve | 2018 | 23 | 4 | 1,150 |
+| Patrick Kearon | `patrick-kearon` | Quorum of the Twelve | 2023 | 9 | 4 | 743 |
+| Gérald Caussé | `gerald-causse` | Quorum of the Twelve | 2025 | 10 | 2 | 562 |
+| Clark G. Gilbert | `clark-g-gilbert` | Quorum of the Twelve | 2026 | 3 | 4 | 347 |
+| Russell M. Nelson | `russell-m-nelson` | 17th President of the Church (died 2025) | 1984 | 114 | 22 | 7,652 |
+| Jeffrey R. Holland | `jeffrey-r-holland` | President of the Quorum of the Twelve (died 2025) | 1994 | 64 | 36 | 5,079 |
+| M. Russell Ballard | `m-russell-ballard` | Acting President of the Quorum of the Twelve (died 2023) | 1985 | 88 | 22 | 4,667 |
+
+Roster as of March 2026, plus apostles who died since October 2021. Counts include talks given before each speaker became an apostle. When callings change, edit `SPEAKERS` in [`fetch.py`](fetch.py) and run it again.
+
+## How it works
+
+Each server is a small, cited search index over one speaker's own words. Nothing is summarized or rewritten, so every passage is a direct quote.
+
+```
+speaker pages ──▶ talk text ──▶ paragraphs ──▶ search index ──▶ MCP server
+ (conference     (content       (each with     (SQLite FTS5,    (search, list_talks,
+  + BYU lists)    APIs)          its own link)  BM25 ranking)    list_speakers)
+```
+
+| Step | Command | Output |
+|---|---|---|
+| 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk, with title, date, source and link |
+| 2. Check | `uv run test_prophets.py` | A self-check of the paragraph reader and the search |
+| 3. Serve | `uv run server.py [--speaker slug]` | An MCP server over stdio, ready for Claude, Cursor or Codex |
+
+- **Sources.** General Conference talks come from the Church's content API on churchofjesuschrist.org. BYU devotionals and forums come from the BYU Speeches site's data API.
+- **Search.** SQLite's built-in full-text search (FTS5) ranks paragraphs with BM25, a standard way to score how well text matches a question. Porter stemming means "repenting" also finds "repentance". Talk titles count three times as much as body text, and at most two passages come from any one talk, so one long talk can't fill every result.
+- **Skipped on purpose.** The sustaining of Church officers, auditing reports and statistical reports are left out. They are read aloud as procedure, not given as teaching.
+
+### Files
+
+- [`fetch.py`](fetch.py) downloads the talks and builds the index. Rerunning it skips talks already saved.
+- [`server.py`](server.py) is the MCP server, built on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
+- [`test_prophets.py`](test_prophets.py) is the self-check.
 
 ## Content
 
-Talks are © Intellectual Reserve, Inc. and BYU. Their terms allow personal, noncommercial use; get permission before hosting this publicly.
+- This project is **unofficial**. It is not affiliated with or endorsed by The Church of Jesus Christ of Latter-day Saints or Brigham Young University.
+- Talks are © Intellectual Reserve, Inc. and Brigham Young University. Their terms allow personal, noncommercial use. Get permission before hosting this publicly.
+- The repo contains only code. The talk text is downloaded to your own computer when you run `fetch.py`, and it is never committed.
+- Every passage links to its original source, so you can read it in context.
+
+## License
+
+The code is [MIT](LICENSE). Talk content belongs to its owners; see [Content](#content).

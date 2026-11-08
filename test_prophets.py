@@ -12,7 +12,7 @@ os.environ["PROPHETS_DB"] = os.path.join(tempfile.mkdtemp(), "prophets.db")  # n
 import fetch  # noqa: E402
 from fetch import CALLINGS, SPEAKERS, connect, credits, hold_lock, magazine_articles, page, paragraphs, recent, record, reprint, walk  # noqa: E402
 import server  # noqa: E402
-from server import lookup_verses, recent_additions, search_passages, search_verses  # noqa: E402
+from server import list_sources, lookup_verses, recent_additions, search_passages, search_verses, talk_text  # noqa: E402
 
 # The update lock: one holder at a time, and the operating system frees it when the holder exits, even on a crash.
 first = hold_lock()
@@ -119,6 +119,46 @@ assert "Nothing matched" in search_passages(con, "zzz", None)
 assert "Nothing matched" in search_passages(con, "with you", None)  # filler words alone don't match "I am with you."
 assert "we can choose" in search_passages(con, "we can", "dallin-h-oaks")  # all filler: searched as typed
 
+# A passage names its paragraph (counting the short paragraphs search hides) and its talk ID.
+home = "https://www.churchofjesuschrist.org/study/general-conference/2026/04/15gilbert?lang=eng"
+for n, text in enumerate(["Brothers and sisters, welcome.", "The prodigal son came to himself in a far country and arose.",
+                          "Come home, ye who are weary, for the Father runs to meet every returning child."], 1):
+    con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Come Home", text, "clark-g-gilbert", "Clark G. Gilbert", "General Conference", "2026-04", home, f"p{n}"))
+passage = search_passages(con, "weary returning child", "clark-g-gilbert")
+assert passage.startswith('## 1. Clark G. Gilbert, "Come Home" ¶3\nGeneral Conference, 2026-04\nTalk ID: general-conference/2026/04/15gilbert\nSource: '), passage
+
+# get_talk: a header, then every paragraph numbered in reading order.
+assert talk_text(con, "general-conference/2026/04/15gilbert") == """# "Come Home"
+Clark G. Gilbert · General Conference, 2026-04
+Source: https://www.churchofjesuschrist.org/study/general-conference/2026/04/15gilbert?lang=eng
+Talk ID: general-conference/2026/04/15gilbert · 3 paragraphs
+¶ numbers count this talk's own paragraphs, not the website's.
+
+¶1 Brothers and sisters, welcome.
+¶2 The prodigal son came to himself in a far country and arose.
+¶3 Come home, ye who are weary, for the Father runs to meet every returning child.""", talk_text(con, "general-conference/2026/04/15gilbert")
+assert talk_text(con, home + "&id=p3#p3") == talk_text(con, "general-conference/2026/04/15gilbert")  # a link from a passage works too
+assert talk_text(con, "general-conference/2026/04/15gilbert?lang=eng#p3") == talk_text(con, "general-conference/2026/04/15gilbert")  # an ID with a link's tail
+assert "No talk with the ID general-conference/1999/04/nobody" in talk_text(con, "general-conference/1999/04/nobody")
+part = talk_text(con, "general-conference/2026/04/15gilbert", start=2, end=3)
+assert "Talk ID: general-conference/2026/04/15gilbert · 3 paragraphs, showing ¶2–¶3\n" in part and part.endswith(
+    "\n\n¶2 The prodigal son came to himself in a far country and arose.\n¶3 Come home, ye who are weary, for the Father runs to meet every returning child."), part
+assert talk_text(con, "general-conference/2026/04/15gilbert", start=3, end=99).endswith("\n\n¶3 Come home, ye who are weary, for the Father runs to meet every returning child.")  # end past the last: up to the last
+# A long talk comes in parts of about 5,000 words, split between paragraphs, each saying where to go on.
+for n in range(1, 5):
+    con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Long Speech", f"part{n} " + "word " * 1999, "clark-g-gilbert", "Clark G. Gilbert", "BYU Speeches", "2024-01-09", "https://speeches.byu.edu/talks/clark-g-gilbert/long-speech/", None))
+long = talk_text(con, "byu/clark-g-gilbert/long-speech")
+assert "Talk ID: byu/clark-g-gilbert/long-speech · 4 paragraphs, showing ¶1–¶2\n" in long and "¶2 part2 " in long and "part3" not in long, long[:400]
+assert long.endswith("\n\nContinued: call get_talk again with start=3."), long[-200:]
+rest = talk_text(con, "https://speeches.byu.edu/talks/clark-g-gilbert/long-speech/#p3", start=3)  # a BYU link with an anchor
+assert "showing ¶3–¶4\n" in rest and rest.rstrip().endswith("word") and "Continued" not in rest, rest[-200:]
+assert talk_text(con, "byu/clark-g-gilbert/long-speech", start=1, end=4).endswith("start=3, end=4.")  # reading on keeps the asked-for end
+# A one-speaker server reads only that speaker's talks.
+assert talk_text(con, "general-conference/2026/04/15gilbert", speaker="henry-b-eyring") == "general-conference/2026/04/15gilbert isn't one of Henry B. Eyring's talks. Use a Talk ID from this server's search or list_talks."
+assert talk_text(con, "general-conference/2026/04/15gilbert", speaker="clark-g-gilbert") == talk_text(con, "general-conference/2026/04/15gilbert")
+for start, end in ((4, None), (3, 2), (0, 2)):
+    assert talk_text(con, "general-conference/2026/04/15gilbert", start=start, end=end) == "This talk has 3 paragraphs: ask for ¶1 to ¶3.", (start, end)
+
 # A joint talk stored under two of our speakers shows each paragraph once, with everyone's names.
 both = "Camille N. Johnson and J. Anette Dennis"
 for slug in ("camille-n-johnson", "j-anette-dennis"):
@@ -143,13 +183,15 @@ assert not reprint(con, "dallin-h-oaks", "Liahona", "Talk A", "2027-01")
 assert set(CALLINGS) == set(SPEAKERS), set(CALLINGS) ^ set(SPEAKERS)  # every speaker shows a calling
 
 # whats_new: a saved talk shows once (even when joint), an old addition drops out of the window, and the speaker filter holds.
-fetch.save(con, "camille-n-johnson", "Liahona", "New Light", "2026-11", "https://n/l?lang=eng", [("p1", "x")], both)
-fetch.save(con, "j-anette-dennis", "Liahona", "New Light", "2026-11", "https://n/l?lang=eng", [("p1", "x")], both)
+fetch.save(con, "camille-n-johnson", "Liahona", "New Light", "2026-11", "https://www.churchofjesuschrist.org/study/liahona/2026/11/new-light?lang=eng", [("p1", "x")], both)
+fetch.save(con, "j-anette-dennis", "Liahona", "New Light", "2026-11", "https://www.churchofjesuschrist.org/study/liahona/2026/11/new-light?lang=eng", [("p1", "x")], both)
 fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Old News", "2020-01-01", "https://o/n/", [(None, "x")])
 fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Video Only", "2026-11-01", "https://v/o/", [])  # no transcript: not saved
 con.execute("UPDATE added SET at = datetime('now', '-60 days') WHERE title = 'Old News'")
 new = recent_additions(con, None, 30)
 assert new.count("New Light") == 1 and "Old News" not in new and "Video Only" not in new and "1 added" in new, new
+assert ": New Light · Talk ID: liahona/2026/11/new-light · https://" in new, new  # every listed talk shows its ID
+assert "- Clark G. Gilbert, 2026-04, General Conference: Come Home · Talk ID: general-conference/2026/04/15gilbert · https://" in list_sources(con, "clark-g-gilbert")
 assert "Old News" in recent_additions(con, "dallin-h-oaks", 90)
 assert "Nothing added" in recent_additions(con, "henry-b-eyring", 30)
 assert "No full update has finished yet." in new  # the test index has never finished a full run

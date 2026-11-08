@@ -14,7 +14,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from fetch import CALLINGS, CHECKED, DB, SPEAKERS, VOLUMES, connect, hold_lock
+from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, SPEAKERS, VOLUMES, connect, hold_lock
 
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
 MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
@@ -23,6 +23,7 @@ FILLER = set(
     "me my not of on or our she should so than that the their them then there these they this to was we were what when "
     "where which who why will with would you your".split()
 )
+WORDS_PER_CALL = 5000  # per get_talk call: nearly every conference talk and most BYU speeches fit whole
 HOUR = 3600
 UPDATE_EVERY = 7 * 24 * HOUR
 CITE = "Quote passages in the speaker's own words and cite each one with its Source link, title and date."
@@ -41,28 +42,101 @@ def match_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
+def talk_id(link: str) -> str:
+    """A talk's lasting name from its source link: general-conference/2025/04/47oaks, byu/<speaker>/<talk>."""
+    link = link.strip().split("#")[0].split("?")[0].strip("/")  # an anchor or query on a link or a pasted ID
+    if "speeches.byu.edu/talks/" in link:
+        return "byu/" + link.split("/talks/", 1)[1]
+    if "/study/" in link:
+        return link.split("/study/", 1)[1]
+    return link  # already an ID
+
+
+def talk_link(tid: str) -> str:
+    """The stored source link for a talk ID (the reverse of talk_id)."""
+    if tid.startswith("byu/"):
+        return f"{BYU}/talks/{tid[4:]}/"
+    return f"{CHURCH}/study/{tid}?lang=eng"
+
+
+def talk_text(con: sqlite3.Connection, talk: str, start: int | None = None, end: int | None = None, speaker: str | None = None) -> str:
+    """A talk's paragraphs, numbered as in search; speaker limits a one-speaker server to its own talks."""
+    tid = talk_id(talk)
+    url = talk_link(tid)
+    rows = con.execute(
+        "SELECT rowid, speaker, name, title, source, date, text FROM passages WHERE url = ? ORDER BY rowid", (url,)
+    ).fetchall()
+    if not rows:
+        return f"No talk with the ID {tid}. Use a Talk ID from search, list_talks or whats_new."
+    if speaker and speaker not in {r[1] for r in rows}:
+        return f"{tid} isn't one of {SPEAKERS[speaker]}'s talks. Use a Talk ID from this server's search or list_talks."
+    copy = speaker or rows[0][1]  # a joint talk is stored once per speaker; read one copy
+    numbers = paragraph_numbers(con, {url})
+    paras = {numbers[r[0]]: r for r in rows if r[1] == copy}
+    total = len(paras)
+    first = 1 if start is None else start
+    last = total if end is None else min(end, total)
+    if not 1 <= first <= last:
+        return f"This talk has {total} paragraphs: ask for ¶1 to ¶{total}."
+    asked_end = f", end={last}" if end is not None else ""
+    lines, words = [], 0
+    for n in range(first, last + 1):
+        text = paras[n][6]
+        if lines and words + len(text.split()) > WORDS_PER_CALL:
+            last, more = n - 1, f"\n\nContinued: call get_talk again with start={n}{asked_end}."
+            break
+        lines.append(f"¶{n} {text}")
+        words += len(text.split())
+    else:
+        more = ""
+    _, _, name, title, source, date, _ = paras[1]
+    shown = "" if (first, last) == (1, total) else f", showing ¶{first}–¶{last}"
+    header = (
+        f'# "{title}"\n{name} · {source}, {date}\nSource: {url}\n'
+        f"Talk ID: {tid} · {total} paragraphs{shown}\n¶ numbers count this talk's own paragraphs, not the website's."
+    )
+    return header + "\n\n" + "\n".join(lines) + more
+
+
+def paragraph_numbers(con: sqlite3.Connection, urls: set[str]) -> dict[int, int]:
+    """Each stored paragraph's number in its talk (1, 2, 3… in reading order), keyed by row id."""
+    rows = con.execute(
+        f"SELECT url, speaker, rowid FROM passages WHERE url IN ({','.join('?' * len(urls))}) ORDER BY rowid", list(urls)
+    )
+    counts: dict[tuple[str, str], int] = {}
+    numbers = {}
+    for url, speaker, rowid in rows:  # a joint talk's copies are numbered separately, and identically
+        counts[url, speaker] = numbers[rowid] = counts.get((url, speaker), 0) + 1
+    return numbers
+
+
 def search_passages(con: sqlite3.Connection, query: str, speaker: str | None, limit: int = 8) -> str:
     match = match_query(query)
     if not match:
         return "Give a few words to search for."
     rows = con.execute(
-        """SELECT name, title, source, date, url, anchor, text FROM passages
+        """SELECT rowid, name, title, source, date, url, anchor, text FROM passages
            WHERE passages MATCH ? AND (? IS NULL OR speaker = ?)
            ORDER BY bm25(passages, 1.0, 1.0) LIMIT ?""",  # heavier title weight let any paragraph of a matching talk win
         (match, speaker, speaker, limit * 20),
     ).fetchall()
     per_talk: dict[str, int] = {}
     shown: set[str] = set()  # the same paragraph can be saved twice (a joint talk, a reprint under a new title); show it once
-    out = []
-    for name, title, source, date, url, anchor, text in rows:
+    passages = []
+    for row in rows:
+        *_, url, _, text = row
         if per_talk.get(url, 0) >= MAX_PER_TALK or len(text.split()) < MIN_WORDS or text in shown:
             continue
         shown.add(text)
         per_talk[url] = per_talk.get(url, 0) + 1
-        link = f"{url}&id={anchor}#{anchor}" if anchor else url  # conference links jump to the paragraph
-        out.append(f'## {len(out) + 1}. {name}, "{title}"\n{source}, {date}\nSource: {link}\n\n{text}')
-        if len(out) == limit:
+        passages.append(row)
+        if len(passages) == limit:
             break
+    numbers = paragraph_numbers(con, {url for *_, url, _, _ in passages}) if passages else {}
+    out = []
+    for rowid, name, title, source, date, url, anchor, text in passages:
+        link = f"{url}&id={anchor}#{anchor}" if anchor else url  # conference links jump to the paragraph
+        out.append(f'## {len(out) + 1}. {name}, "{title}" ¶{numbers[rowid]}\n{source}, {date}\nTalk ID: {talk_id(url)}\nSource: {link}\n\n{text}')
     return "\n\n---\n\n".join(out) or f'Nothing matched "{query}". Try other words, or call list_talks.'
 
 
@@ -122,7 +196,7 @@ def list_sources(con: sqlite3.Connection, speaker: str | None) -> str:
            WHERE ? IS NULL OR speaker = ? ORDER BY name, date DESC""",
         (speaker, speaker),
     )
-    return "\n".join(f"- {name}, {date}, {source}: {title} ({url})" for name, date, source, title, url in rows)
+    return "\n".join(f"- {name}, {date}, {source}: {title} · Talk ID: {talk_id(url)} · {url}" for name, date, source, title, url in rows)
 
 
 def recent_additions(con: sqlite3.Connection, speaker: str | None, days: int = 30) -> str:
@@ -142,7 +216,7 @@ def recent_additions(con: sqlite3.Connection, speaker: str | None, days: int = 3
     ).fetchall()
     if not rows:
         return f"{status}\nNothing added in the last {days} days."
-    lines = [f"- added {added}: {name}, {date}, {source}: {title} ({url})" for added, name, date, source, title, url in rows]
+    lines = [f"- added {added}: {name}, {date}, {source}: {title} · Talk ID: {talk_id(url)} · {url}" for added, name, date, source, title, url in rows]
     return f"{status}\n{len(rows)} added in the last {days} days, newest first:\n" + "\n".join(lines)
 
 
@@ -222,6 +296,10 @@ def main():
         @mcp.tool(description="Show which talks and articles the weekly update added in the last `days` days, and when the last update ran. Optionally limit to one speaker slug.")
         def whats_new(days: int = 30, speaker: str | None = None) -> str:
             return recent_additions(con, speaker, max(1, min(days, 365)))
+
+    @mcp.tool(description=f"Read a talk's full text as numbered paragraphs (¶1, ¶2…). Pass a Talk ID from search, list_talks or whats_new, or the talk's Source link. Optionally pass start and end paragraph numbers. Long talks come in parts of about {WORDS_PER_CALL:,} words; follow the note at the end to read on. {CITE}")
+    def get_talk(talk: str, start: int | None = None, end: int | None = None) -> str:
+        return talk_text(con, talk, start, end, speaker)
 
     @mcp.tool(description=f"Search the standard works (Old Testament, New Testament, Book of Mormon, Doctrine and Covenants, Pearl of Great Price) for verses about a topic. Optionally limit to one volume: ot, nt, bofm, dc-testament or pgp. {QUOTE_VERSES}")
     def search_scriptures(query: str, volume: str | None = None, limit: int = 8) -> str:

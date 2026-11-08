@@ -4,10 +4,10 @@
 
 **Prophets, apostles and the women who lead The Church of Jesus Christ of Latter-day Saints (LDS), in an MCP server.**
 
-The First Presidency, the Quorum of the Twelve, and the Relief Society, Young Women and Primary general presidencies, each turned into a searchable MCP server built from their General Conference talks, devotionals, magazine articles and BYU speeches.<br>
+The First Presidency, the Quorum of the Twelve, and the Relief Society, Young Women and Primary general presidencies, each turned into a searchable MCP server built from their General Conference talks, devotionals, magazine articles and BYU speeches. The standard works come with it, verse by verse.<br>
 Add one to Claude, Cursor or Codex. Every answer cites its source.
 
-[Use it](#use-it-in-a-few-minutes) · [Prophets and apostles](#prophets-and-apostles) · [Women leaders](#women-leaders) · [How it works](#how-it-works) · [Content](#content)
+[Use it](#use-it-in-a-few-minutes) · [Prophets and apostles](#prophets-and-apostles) · [Women leaders](#women-leaders) · [Scriptures](#scriptures) · [How it works](#how-it-works) · [Content](#content)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-1f6feb.svg)](LICENSE)
 [![Speakers](https://img.shields.io/badge/speakers-27-202020.svg)](#women-leaders)
@@ -57,7 +57,7 @@ In **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_conf
 }
 ```
 
-Then just ask: *"What has Sister Camille N. Johnson taught about finding relief in Jesus Christ?"*, *"What has President Nelson taught about the gathering of Israel?"* or *"How does Sister Emily Belle Freeman describe a covenant relationship with Christ?"*
+Then just ask: *"What has Sister Camille N. Johnson taught about finding relief in Jesus Christ?"*, *"What has President Nelson taught about the gathering of Israel?"* or *"How does Sister Emily Belle Freeman describe a covenant relationship with Christ?"* Scripture works the same way: *"What does Moroni 10:4-5 say?"* or *"Which Book of Mormon verses talk about charity?"*
 
 **ChatGPT** only connects to MCP servers at a public HTTPS address. `uv run server.py --http` serves the same tools over streamable HTTP at `/mcp` on `$PORT`, but there's no public server yet.
 
@@ -80,6 +80,8 @@ To update right away, run `uv run fetch.py`. When the roster changes, run `git p
 | | `list_speakers()` | Lists every speaker, their slug and how many talks they have |
 | | `list_talks(speaker)` | Lists one speaker's talks, newest first |
 | | `whats_new(days, speaker?)` | Lists talks added by updates in the last `days` days (default 30), and when the last update finished |
+| Both | `search_scriptures(query, volume?, limit)` | Searches the standard works, or one volume (`ot`, `nt`, `bofm`, `dc-testament`, `pgp`), and returns verses with a link to each |
+| | `get_verses(reference)` | Returns the exact text of a reference like `Moroni 10:4-5`, `D&C 121:7` or `Alma 32` (a whole chapter) |
 
 ### What an answer looks like
 
@@ -136,6 +138,20 @@ The women who preside over the Relief Society, Young Women and Primary lead the 
 
 Presidencies as listed on the Church's leadership pages in October 2026. The Primary presidency began serving in August 2026. Sister Garfield and Sister Collins haven't spoken in General Conference or published an article yet, so their talks will appear through the weekly update once they do.
 
+## Scriptures
+
+The standard works, verse by verse, from the Church's Gospel Library edition. Look one up by reference with `get_verses`, or search by topic with `search_scriptures`. Every verse links straight to its place in Gospel Library.
+
+| Volume | Slug | Chapters | Verses |
+|---|---|---|---|
+| Old Testament | `ot` | 929 | 23,145 |
+| New Testament | `nt` | 260 | 7,957 |
+| Book of Mormon | `bofm` | 239 | 6,604 |
+| Doctrine and Covenants | `dc-testament` | 140 | 3,654, plus 38 paragraphs in Official Declarations 1 and 2 |
+| Pearl of Great Price | `pgp` | 16 | 635 |
+
+Only the verses are kept: chapter headings, section introductions and signature lines are left out. Scripture text doesn't change, so it downloads once (about 15 minutes, 18 MB) and later updates skip it.
+
 ## How it works
 
 Each server is a small, cited search index over one speaker's own words. Nothing is summarized or rewritten, so every passage is a direct quote.
@@ -150,27 +166,27 @@ official lists ──▶ talk text ──▶ paragraphs ──▶ search index �
 
 | Step | Command | Output |
 |---|---|---|
-| 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk, with title, date, source and link |
+| 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk, with title, date, source and link, and every verse of the standard works |
 | 2. Check | `uv run test_prophets.py` | A self-check of the paragraph reader and the search |
 | 3. Serve | `uv run server.py [--speaker slug]` | An MCP server over stdio, ready for Claude, Cursor or Codex |
 | 4. Update | automatic, weekly | The server reruns step 1 in the background when the last full check is over 7 days old, checking at start and daily |
 
-- **Sources.** Everything comes from two official places. The Church's Gospel Library API on churchofjesuschrist.org supplies General Conference talks (found through each conference's table of contents and each speaker's page), broadcasts and devotionals, and articles from the Liahona (2021 on), For the Strength of Youth (2021 on), Ensign and New Era (1971–2020). BYU devotionals and forums come from the BYU Speeches data API.
+- **Sources.** Everything comes from two official places. The Church's Gospel Library API on churchofjesuschrist.org supplies General Conference talks (found through each conference's table of contents and each speaker's page), broadcasts and devotionals, and articles from the Liahona (2021 on), For the Strength of Youth (2021 on), Ensign and New Era (1971–2020), plus the Church's edition of the standard works. BYU devotionals and forums come from the BYU Speeches data API.
 - **Who wrote it.** Each devotional and article is matched to a speaker by the author recorded in the Church's own page data, not by guessing from the byline. Devotionals and magazines are listed by event and issue, so `uv run fetch.py <slug>` for one speaker covers only conference and BYU; a full run covers everything.
 - **Search.** SQLite's built-in full-text search (FTS5) ranks paragraphs with BM25, a standard way to score how well text matches a question. Porter stemming means "repenting" also finds "repentance". A matching talk title helps a passage rank, footnotes are left out, and at most two passages come from any one talk, so one long talk can't fill every result.
 - **Skipped on purpose.** The sustaining of Church officers, solemn assemblies, auditing reports and statistical reports are left out; they're procedure, not teaching. Magazine reprints and excerpts of conference talks are left out too, since the full talk is already there.
 
 ### Files
 
-- [`fetch.py`](fetch.py) downloads the talks and builds the index. Rerunning it skips talks already saved.
+- [`fetch.py`](fetch.py) downloads the talks and scriptures and builds the index. Rerunning it skips talks and chapters already saved.
 - [`server.py`](server.py) is the MCP server, and it starts the weekly update. It's built on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
 - [`test_prophets.py`](test_prophets.py) is the self-check.
 
 ## Content
 
 - This project is **unofficial**. It is not affiliated with or endorsed by The Church of Jesus Christ of Latter-day Saints or Brigham Young University.
-- Talks are © Intellectual Reserve, Inc. and Brigham Young University. Their terms allow personal, noncommercial use. Get permission before hosting this publicly.
-- The repo contains only code. The talk text is downloaded to your own computer when you run `fetch.py`, and it is never committed.
+- Talks are © Intellectual Reserve, Inc. and Brigham Young University. Their terms allow personal, noncommercial use. Get permission before hosting this publicly. Scripture text comes from the Church's Gospel Library edition under the same terms.
+- The repo contains only code. The talk and scripture text is downloaded to your own computer when you run `fetch.py`, and it is never committed.
 - Every passage links to its original source, so you can read it in context.
 
 ## License

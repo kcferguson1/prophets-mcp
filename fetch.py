@@ -1,7 +1,7 @@
 """Downloads talks and articles by the Church's senior leaders into prophets.db.
 
-Sources: General Conference, BYU Speeches, Church broadcasts and devotionals, and the Liahona, Ensign,
-New Era and For the Strength of Youth magazines.
+Sources: General Conference, BYU Speeches, Church broadcasts and devotionals, the Liahona, Ensign,
+New Era and For the Strength of Youth magazines, and the standard works (verse by verse).
 
 Usage: uv run fetch.py [speaker-slug ...]   (no slugs = everyone and every source; rerunning skips what's saved)
 """
@@ -93,6 +93,10 @@ CALLINGS = {
 SKIP_TITLES = re.compile(r"sustaining of|auditing department|statistical report|solemn assembly|\bexcerpts\b", re.I)
 
 MAGAZINES = {"liahona": "Liahona", "ensign": "Ensign", "new-era": "New Era", "ftsoy": "For the Strength of Youth"}
+VOLUMES = {
+    "ot": "Old Testament", "nt": "New Testament", "bofm": "Book of Mormon",
+    "dc-testament": "Doctrine and Covenants", "pgp": "Pearl of Great Price",
+}
 MAGAZINE_ROOTS = ("/magazines/liahona", "/magazines/for-the-strength-of-youth", "/magazines/ensign-19712020")
 BROADCASTS_ROOT = "/videos-and-images/broadcasts-and-devotionals"
 # Magazine columns whose table-of-contents byline is a label, not a name, though our speakers write them.
@@ -264,6 +268,12 @@ def connect(path=DB) -> sqlite3.Connection:
         """CREATE TABLE IF NOT EXISTS added (
             url TEXT, speaker TEXT, name TEXT, source TEXT, date TEXT, title TEXT, at TEXT DEFAULT CURRENT_TIMESTAMP)"""
     )
+    # The standard works, one row per verse; ref ("Moroni 10:4") is indexed so naming a book finds its verses too.
+    con.execute(
+        """CREATE VIRTUAL TABLE IF NOT EXISTS verses USING fts5(
+            ref, text, volume UNINDEXED, book UNINDEXED, chapter UNINDEXED, verse UNINDEXED, url UNINDEXED, anchor UNINDEXED,
+            tokenize='porter unicode61 remove_diacritics 2')"""
+    )
     return con
 
 
@@ -404,6 +414,29 @@ def magazines(seen: set[str]):
             yield issue, None
 
 
+def scriptures(seen: set[str]):
+    """The standard works, chapter by chapter. Yields (chapter uri, verse rows for the verses table, or None if gone)."""
+    for vol, volume in VOLUMES.items():
+        toc = json.dumps(api("dynamic", f"/scriptures/{vol}")["toc"])
+        for uri in sorted(set(re.findall(rf'"(/scriptures/{vol}/[a-z0-9-]+/(\d+))"', toc))):
+            uri, chapter = uri[0], int(uri[1])
+            if uri in seen:
+                continue
+            data = page(uri)
+            if not data:
+                yield uri, None
+                continue
+            book = re.sub(r"\s+\d+$", "", " ".join(data["meta"]["title"].split()))  # "1\xa0Corinthians 13" -> "1 Corinthians"
+            # Verse ids are p1, p2…, unlike chapter headings or "The End"; the id number is the verse number.
+            found = [(int(a[1:]), t) for a, t in paragraphs(data["content"]["body"]) if a and re.fullmatch(r"p\d+", a)]
+            numbered = [(v, t) for v, t in found if t.startswith(f"{v} ")]
+            # Where verses are numbered, unnumbered ids are signatures and notes ("Joseph Smith.", Oliver Cowdery's
+            # note after JS—H 1:75). The Official Declarations number nothing, so every paragraph stays.
+            verses = [(v, t[len(str(v)) + 1:]) for v, t in numbered] if numbered else found
+            url = f"{CHURCH}/study{uri}?lang=eng"
+            yield uri, [(f"{book} {chapter}:{v}", t, volume, book, chapter, v, url, f"p{v}") for v, t in verses]
+
+
 def months(date: str) -> int:
     year, month = date.split("-")[:2]
     return int(year) * 12 + int(month)
@@ -490,6 +523,18 @@ def main():
             except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
                 print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
                 failed = True
+        print("Scriptures")
+        chapters = 0
+        try:
+            for uri, rows in scriptures(seen):  # scripture text doesn't change, so a saved chapter is never fetched again
+                con.executemany("INSERT INTO verses VALUES (?,?,?,?,?,?,?,?)", rows or [])
+                con.execute("INSERT OR IGNORE INTO seen VALUES (?)", (uri,))
+                con.commit()
+                chapters += bool(rows)
+        except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
+            print(f"  ! scriptures stopped: {e}", file=sys.stderr)
+            failed = True
+        print(f"  {chapters} new chapters")
         if not failed:
             CHECKED.touch()  # the weekly update waits another week; a cut-off or failed run never gets here, so it retries
     new = con.execute("SELECT COUNT(DISTINCT url) FROM added WHERE at >= ?", (started,)).fetchone()[0]

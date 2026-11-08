@@ -12,7 +12,7 @@ os.environ["PROPHETS_DB"] = os.path.join(tempfile.mkdtemp(), "prophets.db")  # n
 import fetch  # noqa: E402
 from fetch import CALLINGS, SPEAKERS, connect, credits, hold_lock, magazine_articles, page, paragraphs, recent, record, reprint, walk  # noqa: E402
 import server  # noqa: E402
-from server import recent_additions, search_passages  # noqa: E402
+from server import lookup_verses, recent_additions, search_passages, search_verses  # noqa: E402
 
 # The update lock: one holder at a time, and the operating system frees it when the holder exits, even on a crash.
 first = hold_lock()
@@ -153,6 +153,43 @@ assert new.count("New Light") == 1 and "Old News" not in new and "Video Only" no
 assert "Old News" in recent_additions(con, "dallin-h-oaks", 90)
 assert "Nothing added" in recent_additions(con, "henry-b-eyring", 30)
 assert "No full update has finished yet." in new  # the test index has never finished a full run
+
+# Scriptures: verses only (no chapter heading or "The End"), numbers from the id, titles with non-breaking spaces cleaned.
+chapter = {"meta": {"title": "1\xa0Nephi 3"}, "content": {"body":
+    '<p id="study_summary1">Nephi and his brethren return.</p><p class="verse" id="p1">1 And it came to pass.</p>'
+    '<p class="verse" id="p7">7 I will go and do the things which the Lord hath commanded.</p><p id="p8">Nephi.</p><p id="closing1">The End</p>'}}
+fetch.api = lambda kind, uri: {"toc": {"entries": ["/scriptures/bofm/1-ne/3"]}} if kind == "dynamic" else chapter
+url = "https://www.churchofjesuschrist.org/study/scriptures/bofm/1-ne/3?lang=eng"
+assert list(fetch.scriptures(set())) == [("/scriptures/bofm/1-ne/3", [
+    ("1 Nephi 3:1", "And it came to pass.", "Book of Mormon", "1 Nephi", 3, 1, url, "p1"),
+    ("1 Nephi 3:7", "I will go and do the things which the Lord hath commanded.", "Book of Mormon", "1 Nephi", 3, 7, url, "p7")])]
+assert list(fetch.scriptures({"/scriptures/bofm/1-ne/3"})) == []  # a saved chapter isn't fetched again
+declaration = {"meta": {"title": "Official Declaration 2"}, "content": {"body": '<p id="p1">To Whom It May Concern:</p><p id="p2">We have watched.</p>'}}
+fetch.api = lambda kind, uri: {"toc": ["/scriptures/dc-testament/od/2"]} if kind == "dynamic" else declaration
+assert [row[0] for _, rows in fetch.scriptures(set()) for row in rows] == ["Official Declaration 2:1", "Official Declaration 2:2"]  # nothing numbered: all kept
+fetch.api = real_api
+
+assert "haven't been downloaded" in lookup_verses(con, "Moroni 10:4") and "haven't been downloaded" in search_verses(con, "faith", None)
+for ref, text, volume, book, ch, v in [
+    ("Moroni 10:3", "Behold, I would exhort you.", "Book of Mormon", "Moroni", 10, 3),
+    ("Moroni 10:4", "Ask God with a sincere heart, with real intent, having faith in Christ.", "Book of Mormon", "Moroni", 10, 4),
+    ("Moroni 10:5", "By the power of the Holy Ghost ye may know the truth of all things.", "Book of Mormon", "Moroni", 10, 5),
+    ("Doctrine and Covenants 121:7", "My son, peace be unto thy soul.", "Doctrine and Covenants", "Doctrine and Covenants", 121, 7),
+    ("Psalm 23:1", "The Lord is my shepherd; I shall not want.", "Old Testament", "Psalm", 23, 1),
+]:
+    con.execute("INSERT INTO verses VALUES (?,?,?,?,?,?,?,?)", (ref, text, volume, book, ch, v, f"https://s/{book}/{ch}?lang=eng", f"p{v}"))
+four_five = lookup_verses(con, "moroni 10:4-5")
+assert four_five.startswith("## Moroni 10:4-5\nSource: https://s/Moroni/10?lang=eng&id=p4#p4") and "Behold" not in four_five and "5 By the power" in four_five, four_five
+whole = lookup_verses(con, "Moroni 10")  # no verse: the whole chapter
+assert whole.startswith("## Moroni 10:3-5\n") and all(f"\n{v} " in whole for v in (3, 4, 5)), whole
+assert "peace be unto thy soul" in lookup_verses(con, "D&C 121:7")
+assert "my shepherd" in lookup_verses(con, "Psalms 23:1")
+assert "No book called" in lookup_verses(con, "Hezekiah 1:1")
+assert "has no verse 9" in lookup_verses(con, "Moroni 10:9")
+assert "Give a reference" in lookup_verses(con, "Moroni")
+assert "## Moroni 10:4\n" in search_verses(con, "sincere intent", None)
+assert "No verse matched" in search_verses(con, "sincere intent", "ot")  # volume filter, by short name
+assert "Psalm 23:1" in search_verses(con, "shepherd", "Old Testament")
 
 # An update starts when no full check has finished or the last is over a week old, and never while one is running.
 started = []

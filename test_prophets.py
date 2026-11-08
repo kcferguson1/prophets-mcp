@@ -307,6 +307,10 @@ assert talk.paras == [("p1", "Ask in faith."), ("p2", "Read D&C 76:58–59 often
 assert talk.notes == [(1, 1, "See Moroni 10:4, 5."), (2, 2, "James E. Faust, “Salt Lake Tabernacle Rededication,” Liahona, May 2007, 39.")], talk.notes
 assert talk.links == [(2, None, "/study/scriptures/dc-testament/dc/76?lang=eng&id=p58-p59#p58"), (1, 1, "/study/scriptures/bofm/moro/10?lang=eng&id=p4%2C5#p4")], talk.links
 assert paragraphs(church) == talk.paras
+# A marker's link names its footnote; the number it shows can differ ("#note4" showing 2) and doesn't count.
+shown_other = fetch.read_talk('<p id="p1">Saints.<a class="note-ref" href="#note4"><sup class="marker">2</sup></a></p><p id="p2">Later.<a class="note-ref" href="#note2"><sup class="marker">3</sup></a></p>'
+                              '<ol><li id="note2"><p id="x">Second.</p></li><li id="note4"><p id="y">Fourth.</p></li></ol>')
+assert shown_other.notes == [(1, 4, "Fourth."), (2, 2, "Second.")], shown_other.notes
 # Older pages put a footnote's paragraphs loose (note1_p1, note1_p2): one footnote, links from both.
 loose = fetch.read_talk('<p id="p1">Pray.<a href="#note1"><sup>1</sup></a></p><p id="note1_p1">See <a href="/study/scriptures/bofm/moro/10?lang=eng&amp;id=p4#p4">Moroni 10:4</a>.</p><p id="note1_p2">Also a comment.</p>')
 assert loose.notes == [(1, 1, "See Moroni 10:4. Also a comment.")] and loose.links == [(1, 1, "/study/scriptures/bofm/moro/10?lang=eng&id=p4#p4")], loose
@@ -319,6 +323,10 @@ spoken = fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text)
 assert spoken.paras == [(None, "Whosoever will lose his life for my sake shall find it” and then explained.")], spoken.paras
 assert spoken.notes == [(1, 2, "Matthew 10:39; quoted in Marion G. Romney.")], spoken.notes
 assert spoken.links == [(1, 2, "https://www.churchofjesuschrist.org/study/scriptures/nt/matt/10.39?lang=eng")], spoken.links
+# A note BYU left without its id is still a footnote (numbered from its text), never a paragraph of the speech.
+idless = fetch.read_talk("<p>Walk in all the commandments of God blameless.<sup>32</sup></p>",
+                         '<div id=is-notes-body hidden><p class=p2>32<a href="https://www.churchofjesuschrist.org/study/scriptures/dc-testament/dc/88.133?lang=eng">. Doctrine and Covenants 88:133</a>.</p></div>')
+assert idless.paras == [(None, "Walk in all the commandments of God blameless.")] and idless.notes == [(1, 32, "Doctrine and Covenants 88:133.")] and len(idless.links) == 1, idless
 fetch.get = lambda url: "<html>a new layout</html>"
 assert fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text).notes == []  # no panel: saved without footnotes
 def busy(url):
@@ -497,4 +505,26 @@ try:
     assert len(started) == 3, "talks still need their one-time re-read: update now, not in a week"
 finally:
     server.subprocess.Popen = real_popen
+
+# Real saved pages, on a machine that has them (GitHub doesn't): re-reading each with today's reader gives the paragraphs
+# stored for it, so ¶ numbers and the footnotes and citations keyed to them still line up, and its footnote markers resolve.
+saved = os.path.join(os.path.dirname(os.path.abspath(fetch.__file__)), "prophets.db")
+if os.path.exists(saved):
+    with closing(sqlite3.connect(f"file:{saved}?mode=ro", uri=True, timeout=10)) as db:  # read-only: an update may be writing
+        stored: dict[str, list[str]] = {}
+        for url, speaker, text in db.execute("SELECT url, speaker, text FROM passages WHERE url IN (SELECT url FROM reread) ORDER BY rowid"):
+            if speaker == stored.setdefault(url, [speaker])[0]:  # a joint talk's copies match; compare the first
+                stored[url].append(text)
+        pages = db.execute("SELECT url, html FROM pages WHERE url IN (SELECT url FROM reread)").fetchall()
+    problems, missing = [], []
+    for url, blob in pages:
+        reader = fetch._Paragraphs()
+        reader.feed(zlib.decompress(blob).decode())
+        if [t for _, t, _, _ in reader.found] != stored[url][1:]:
+            problems.append(f"{url}: re-reading its saved page gives other paragraphs")
+        unresolved = {m for *_, markers, _ in reader.found for m in markers} - set(reader.notes)
+        if reader.notes and unresolved:  # usually a typo on the page (BYU sometimes drops a note), so a warning
+            missing.append(f"{url}: {sorted(unresolved)}")
+    assert not problems, f"{len(problems)} saved pages read wrong:\n" + "\n".join(problems)
+    print(f"  checked {len(pages)} saved pages" + (f"; {len(missing)} have markers with no footnote:\n    " + "\n    ".join(missing) if missing else ""))
 print("ok")

@@ -211,13 +211,17 @@ class _Paragraphs(HTMLParser):
         self.current: tuple[str | None, list[str], list[int], list[str]] | None = None
         self.in_sup = 0
         self.sup: list[str] = []  # the open <sup>'s text: a bare number there is a footnote marker (BYU's API text)
+        self.in_ref = False  # inside a marker's link, whose href names the footnote; its visible number may differ
         self.note: tuple[int | None, str, list[str], list[str]] | None = None  # (number, closing tag, text, scripture links)
         self.notes: dict[int, tuple[str, list[str]]] = {}
+        self.panel = False  # inside BYU's notes panel, where every paragraph is a footnote
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         pid = a.get("id") or ""
-        if tag in ("li", "p") and pid.startswith("note") and not self.note:
+        if tag == "div" and pid == "is-notes-body":
+            self.panel = True  # it comes last, after the speech
+        elif tag in ("li", "p") and (pid.startswith("note") or self.panel) and not self.note:
             # Newer talks put footnote paragraphs, with random ids, inside <li id="note5">. "note_title1" has no number.
             number = NOTE_ID.fullmatch(pid)
             self.note = (int(number[1]) if number else None, tag, [], [])
@@ -231,19 +235,24 @@ class _Paragraphs(HTMLParser):
             marker = NOTE_REF.search(href)
             if marker and self.current:
                 self.current[2].append(int(marker[1]))
+                self.in_ref = True
             elif "/scriptures/" in href and (self.note or self.current):
                 (self.note or self.current)[3].append(href)
 
     def handle_endtag(self, tag):
         if self.note and tag == self.note[1]:
             number, _, text, links = self.note
+            if number is None and self.panel and (lead := re.match(r"\d+", "".join(text).strip())):
+                number = int(lead[0])  # BYU sometimes leaves the id off a note: "<p class=p2>32. …"
             if number is not None:  # a second loose paragraph (note1_p2) adds to the first
                 before, before_links = self.notes.get(number, ("", []))
                 self.notes[number] = (" ".join((before + " " + "".join(text)).split()), before_links + links)
             self.note = None
+        elif tag == "a":
+            self.in_ref = False
         elif tag == "sup" and self.in_sup:
             self.in_sup -= 1
-            if self.current and "".join(self.sup).strip().isdigit():
+            if self.current and not self.in_ref and "".join(self.sup).strip().isdigit():
                 self.current[2].append(int("".join(self.sup)))
         elif tag == "p" and self.current:
             text = " ".join("".join(self.current[1]).split())
@@ -458,7 +467,7 @@ def byu_talk(url: str, text: str) -> Reading:
         return read_talk(text)._replace(complete=False)
     if not panel:
         print(f"  ! no footnotes panel on {url}; saved without footnotes", file=sys.stderr)
-    return read_talk(text, panel[1] if panel else "")
+    return read_talk(text, panel[0] if panel else "")  # the panel's own <div> tells the reader where notes begin
 
 
 def byu(slug: str, done: set[str]):

@@ -397,7 +397,9 @@ def credits(data: dict, everyone: bool = False) -> tuple[list[str], str] | None:
         shown = " and ".join(p["name"] for p in people if p.get("name"))
         ours = [s for s in (str(p.get("url", "")).rsplit("/", 1)[-1] for p in people) if s in SPEAKERS]
     if not ours and everyone:
-        links = {p.get("name"): str(p.get("url", "")).rsplit("/", 1)[-1] for p in people}
+        # Only a real person: a name and a leader link (a narrated video's page data names " ", linking to itself).
+        links = {p["name"].strip(): str(p["url"]).rsplit("/", 1)[-1] for p in people
+                 if str(p.get("name", "")).strip() and "/church/leader/" in str(p.get("url", ""))}
         ours = [links.get(n) or slug_of(n) for n in names] if bylines else [s for s in links.values() if s]
     if not ours:
         return None

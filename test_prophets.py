@@ -91,6 +91,7 @@ hathaway = {"meta": {"title": "Steady", "structuredData": json.dumps({"mainEntit
             "content": {"body": '<p class="author-name">By Elder Kevin\xa0J. Hathaway</p><p class="author-role">Of the Seventy</p><p id="p1">' + "Steady faith grows. " * 40 + "</p>"}}
 assert credits(hathaway) is None and credits(hathaway, everyone=True) == (["kevin-j-hathaway"], "Kevin J. Hathaway"), credits(hathaway, everyone=True)
 assert credits(page({}, "By Elder José A. Teixeira"), everyone=True) == (["jose-a-teixeira"], "José A. Teixeira")
+assert credits(page({"mainEntity": {"author": {"name": " ", "url": "/general-conference/2022/04/34video"}}}, ""), everyone=True) is None  # a video, no speaker
 
 # Footnote paragraphs inside <li id="noteN"> are skipped even with random paragraph ids.
 assert paragraphs('<p id="p_a">Our covenant relationship grants access to His power.</p><ol><li id="note5"><p id="p_ef19Q">See Joshua 3:5.</p></li></ol>') == [("p_a", "Our covenant relationship grants access to His power.")]

@@ -106,7 +106,7 @@ def update_if_stale():
     # Appended, so a later server can't wipe the log of the update that's running.
     log = open(DB.with_name("prophets-update.log"), "a")
     subprocess.Popen(
-        [sys.executable, str(Path(__file__).with_name("fetch.py"))],
+        [sys.executable, "-u", str(Path(__file__).with_name("fetch.py"))],  # -u: unbuffered, so the log shows each talk as it's saved
         stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
     )
 

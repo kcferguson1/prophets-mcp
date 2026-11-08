@@ -1,12 +1,14 @@
 """Self-check for the parser, author matching, search and update safety. Run: uv run test_prophets.py"""
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
 import zlib
+from contextlib import closing
 
 os.environ["PROPHETS_DB"] = os.path.join(tempfile.mkdtemp(), "prophets.db")  # never touch the real index or lock
 
@@ -362,11 +364,52 @@ assert cc.execute("SELECT url, para, note, text FROM footnotes").fetchall() == [
 assert cc.execute("SELECT para, chapter, verse, note FROM citations").fetchall() == fetch.citations(cc, "General Conference", talk)
 assert zlib.decompress(cc.execute("SELECT html FROM pages WHERE url = 'https://x/ask?lang=eng'").fetchone()[0]).decode() == church
 
+# The one-time re-read: fresh paragraphs for every speaker on a talk, whats_new untouched, a removed page's text kept,
+# and a failed request left for next time; the version is set only when every talk is done.
+up = connect(":memory:")
+up.executemany("INSERT INTO verses VALUES (?,?,?,?,?,?,?,?)", cc.execute("SELECT * FROM verses"))
+uchtdorf = "https://www.churchofjesuschrist.org/study/general-conference/2022/04/57x?lang=eng"
+gone = "https://www.churchofjesuschrist.org/study/ensign/1990/01/gone?lang=eng"
+speech_url = "https://speeches.byu.edu/talks/x/y/"
+for row in [("Ask", "Old reading of the talk.", "dallin-h-oaks", "Both", "General Conference", "2022-04", uchtdorf, "p1"),
+            ("Ask", "Old reading of the talk.", "henry-b-eyring", "Both", "General Conference", "2022-04", uchtdorf, "p1"),
+            ("Gone", "Text we still have.", "dallin-h-oaks", "Dallin H. Oaks", "Ensign", "1990-01", gone, "p1"),
+            ("Y", "Old BYU text.", "dallin-h-oaks", "Dallin H. Oaks", "BYU Speeches", "2015-01-01", speech_url, None)]:
+    up.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", row)
+up.execute("INSERT INTO added (url, speaker, name, source, date, title) VALUES (?, 'dallin-h-oaks', 'Both', 'General Conference', '2022-04', 'Ask')", (uchtdorf,))
+def site_api(kind, uri):
+    if uri == "/general-conference/2022/04/57x":
+        return {"meta": {}, "content": {"body": church}}
+    raise urllib.error.HTTPError(uri, 404, "test", None, None)
+def site_get(url):
+    if "wp-json" in url:
+        return json.dumps([{"link": speech_url, "date": "2015-01-01", "title": {"rendered": "Y"}, "content": {"rendered": byu_text}}])
+    return notes_page(url)
+fetch.api, fetch.get, notes_page = site_api, site_get, busy
+assert fetch.reread(up) is False  # the BYU notes request failed
+assert up.execute("PRAGMA user_version").fetchone()[0] == 0
+assert up.execute("SELECT speaker, text, anchor FROM passages WHERE url = ? ORDER BY rowid", (uchtdorf,)).fetchall() == [
+    (s, t, a) for s in ("dallin-h-oaks", "henry-b-eyring") for a, t in talk.paras]
+assert up.execute("SELECT para, note FROM footnotes WHERE url = ?", (uchtdorf,)).fetchall() == [(1, 1), (2, 2)]
+assert up.execute("SELECT text FROM passages WHERE url = ?", (gone,)).fetchall() == [("Text we still have.",)]
+assert up.execute("SELECT text FROM passages WHERE url = ?", (speech_url,)).fetchall() == [("Old BYU text.",)]
+assert up.execute("SELECT COUNT(*) FROM added").fetchone()[0] == 1  # re-saved talks aren't new
+assert "Citation data is still being built: 2 of 3 talks done." in recent_additions(up, None)
+notes_page = lambda url: f"<div id=is-notes-body hidden>{panel}</div>"
+assert fetch.reread(up) is True and up.execute("PRAGMA user_version").fetchone()[0] == fetch.VERSION
+assert up.execute("SELECT note, text FROM footnotes WHERE url = ?", (speech_url,)).fetchall() == [(2, "Matthew 10:39; quoted in Marion G. Romney.")]
+assert "Citation data" not in recent_additions(up, None)
+fetch.api, fetch.get = real_api, real_get
+
 # An update starts when no full check has finished or the last is over a week old, and never while one is running.
 started = []
 real_popen = server.subprocess.Popen
 server.subprocess.Popen = lambda *a, **k: started.append(a)
+def set_version(n):
+    with closing(sqlite3.connect(fetch.DB)) as db:
+        db.execute(f"PRAGMA user_version = {n}")
 try:
+    set_version(fetch.VERSION)
     fetch.CHECKED.unlink(missing_ok=True)
     server.update_if_stale()
     assert len(started) == 1, "no full check yet: update"
@@ -381,6 +424,10 @@ try:
     server.update_if_stale()
     assert len(started) == 2, "an update is running: leave it alone"
     running.close()
+    fetch.CHECKED.touch()
+    set_version(0)
+    server.update_if_stale()
+    assert len(started) == 3, "talks still need their one-time re-read: update now, not in a week"
 finally:
     server.subprocess.Popen = real_popen
 print("ok")

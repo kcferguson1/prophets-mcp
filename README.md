@@ -69,6 +69,10 @@ To see what arrived, ask *"What's new in the prophets MCP?"* The `whats_new` too
 
 To update right away, run `uv run fetch.py`. When the roster changes, run `git pull` to get the new speaker list.
 
+### Upgrading
+
+After a `git pull` that adds footnotes and scripture citations, the server downloads every saved talk once more in the background, about 2,300 requests and 20–40 minutes, to keep each talk's footnotes, the verses it cites and its page. Search, `get_talk` and the lists keep working the whole time. Progress goes to `prophets-update.log`, and `whats_new` shows "Citation data is still being built: N of M talks done" until it finishes. If it's stopped, the next update goes on where it left off. A few older talks' ¶ numbers may shift by one or two after this re-read; talk IDs never change.
+
 ### Tools
 
 | Server | Tool | What it does |

@@ -11,12 +11,13 @@ import sys
 import threading
 import time
 import unicodedata
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, MAGAZINES, SPEAKERS, VOLUMES, book_key, connect, hold_lock
+from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, MAGAZINES, SPEAKERS, VERSION, VOLUMES, book_key, connect, hold_lock
 
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
 MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
@@ -266,6 +267,9 @@ def recent_additions(con: sqlite3.Connection, speaker: str | None, days: int = 3
         status = f"Last full update finished {time.strftime('%Y-%m-%d', time.localtime(CHECKED.stat().st_mtime))}; updates run weekly."
     else:
         status = "No full update has finished yet."
+    if con.execute("PRAGMA user_version").fetchone()[0] < VERSION:
+        done, total = con.execute("SELECT (SELECT COUNT(*) FROM reread), (SELECT COUNT(DISTINCT url) FROM passages)").fetchone()
+        status += f"\nCitation data is still being built: {done} of {total} talks done."
     rows = con.execute(
         """SELECT DISTINCT date(at), name, date, source, title, url FROM added
            WHERE at >= datetime('now', ?) AND (? IS NULL OR speaker = ?) ORDER BY 1 DESC, 3 DESC""",
@@ -285,8 +289,11 @@ def keep_updated():
 
 
 def update_if_stale():
-    """Fetch new talks in the background when there's no finished full check from the last week (or none at all)."""
-    if CHECKED.exists() and time.time() - CHECKED.stat().st_mtime < UPDATE_EVERY:
+    """Fetch new talks in the background when there's no finished full check from the last week (or none at all),
+    or right away when saved talks still need their one-time re-read for footnotes and citations."""
+    with closing(sqlite3.connect(DB)) as db:
+        upgraded = db.execute("PRAGMA user_version").fetchone()[0] >= VERSION
+    if upgraded and CHECKED.exists() and time.time() - CHECKED.stat().st_mtime < UPDATE_EVERY:
         return
     lock = hold_lock()
     if lock is None:

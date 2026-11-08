@@ -105,6 +105,8 @@ BROADCASTS_ROOT = "/videos-and-images/broadcasts-and-devotionals"
 # Magazine columns whose table-of-contents byline is a label, not a name, though our speakers write them.
 HIDDEN_AUTHOR_LABELS = ("Covenant Women", "Answers from an Apostle", "First Presidency Message")
 MIN_WORDS = 100  # shorter pages are video-only stubs, posters or quote cards
+# The database's PRAGMA user_version once every saved talk has footnotes and citations; older ones are re-read once.
+VERSION = 2
 
 SKIP_P_CLASSES = {"author-name", "author-role", "reference", "series-title", "subtitle", "title-number"}
 SKIP_P_IDS = ("note", "figure")  # footnotes and image captions
@@ -408,6 +410,8 @@ def connect(path=DB) -> sqlite3.Connection:
     con.execute("CREATE INDEX IF NOT EXISTS citations_url ON citations (url)")
     # Each talk page as read, zlib-compressed, so a new reader can re-read pages without downloading them (docs/adr/0001).
     con.execute("CREATE TABLE IF NOT EXISTS pages (url TEXT PRIMARY KEY, html BLOB)")
+    # Talks saved by the current reader, with footnotes and citations. Lets the one-time re-read resume where it stopped.
+    con.execute("CREATE TABLE IF NOT EXISTS reread (url TEXT PRIMARY KEY)")
     return con
 
 
@@ -616,6 +620,56 @@ def store(con, url, src, talk: Reading):
     con.executemany("INSERT INTO footnotes VALUES (?,?,?,?)", [(url, *note) for note in talk.notes])
     con.executemany("INSERT INTO citations VALUES (?,?,?,?,?)", [(url, *c) for c in citations(con, src, talk)])
     con.execute("INSERT OR REPLACE INTO pages VALUES (?,?)", (url, zlib.compress(talk.html.encode())))
+    if con.execute("SELECT 1 FROM verses LIMIT 1").fetchone():  # with no verses to check against, re-read it later
+        con.execute("INSERT OR IGNORE INTO reread VALUES (?)", (url,))
+
+
+def fresh(url: str) -> Reading | None:
+    """A saved talk's page read again, or None if it's gone or has no text now."""
+    if url.startswith(BYU):
+        hit = speech(url)
+        return byu_talk(url, hit["content"]["rendered"]) if hit else None
+    data = page(url.split("/study", 1)[1].split("?")[0])
+    return read_talk(data["content"]["body"]) if data else None
+
+
+def reread(con) -> bool:
+    """Read every talk saved before footnotes and citations were kept again, once (docs/adr/0001), and set the
+    database's version when none is left. Each talk's paragraphs are replaced in one transaction, so search sees
+    the old ones or the new, never neither. True when every talk is done."""
+    if not con.execute("SELECT 1 FROM verses LIMIT 1").fetchone():
+        return False  # citations are checked against the verses; the scriptures come first next run
+    todo = con.execute("SELECT DISTINCT url, source FROM passages WHERE url NOT IN (SELECT url FROM reread) ORDER BY url").fetchall()
+    if todo:
+        print(f"Re-reading {len(todo)} saved talks for footnotes and citations (once)")
+    errors = 0
+    for url, src in todo:
+        try:
+            talk = fresh(url)
+        except Exception as e:  # a request error: left unmarked, so the next update tries it again
+            print(f"  ! couldn't re-read {url}: {e}", file=sys.stderr)
+            errors += 1
+            if errors == 5:
+                print("  ! stopped after 5 errors in a row; the next update goes on from here", file=sys.stderr)
+                return False
+            continue
+        errors = 0
+        with con:
+            if talk and talk.paras:
+                copies = con.execute("SELECT DISTINCT title, speaker, name, source, date FROM passages WHERE url = ?", (url,)).fetchall()
+                con.execute("DELETE FROM passages WHERE url = ?", (url,))
+                con.executemany(
+                    "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",
+                    [(title, text, slug, name, source, date, url, anchor) for title, slug, name, source, date in copies for anchor, text in talk.paras],
+                )
+                store(con, url, src, talk)
+            else:  # removed from the site since it was saved: keep the text we have
+                print(f"  ! {url} is gone or empty now; kept its saved text", file=sys.stderr)
+                con.execute("INSERT OR IGNORE INTO reread VALUES (?)", (url,))
+    left = con.execute("SELECT COUNT(DISTINCT url) FROM passages WHERE url NOT IN (SELECT url FROM reread)").fetchone()[0]
+    if not left:
+        con.execute(f"PRAGMA user_version = {VERSION}")
+    return not left
 
 
 def save(con, slug, src, title, date, url, talk: Reading, shown=None):
@@ -705,6 +759,11 @@ def main():
             except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
                 print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
                 failed = True
+        try:
+            failed |= not reread(con)
+        except Exception as e:  # a database or page-layout error; rerunning resumes where it stopped
+            print(f"  ! re-reading stopped: {e}", file=sys.stderr)
+            failed = True
         if not failed:
             CHECKED.touch()  # the weekly update waits another week; a cut-off or failed run never gets here, so it retries
     new = con.execute("SELECT COUNT(DISTINCT url) FROM added WHERE at >= ?", (started,)).fetchone()[0]

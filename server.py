@@ -40,12 +40,22 @@ WORDS_PER_CALL = 5000  # per get_talk call: nearly every conference talk and mos
 HOUR = 3600
 UPDATE_EVERY = 7 * 24 * HOUR
 CITE = (
-    "Quote passages in the speaker's own words and cite each one with its Source link, title and date. "
+    "When you quote, use the speaker's own words exactly as returned and cite each quote with its Source link, title and date. "
     "Footnotes under a paragraph give its sources: when one shows the paragraph quotes someone else, say whose words they are."
 )
 FOOTNOTE_WORDS = 60  # per footnote in search results; get_talk shows them whole
 QUOTE_VERSES = "Quote verses exactly as returned and cite each with its reference and Source link."
 NO_SCRIPTURES = "The scriptures haven't been downloaded yet. They arrive with the next full update (uv run fetch.py)."
+
+
+DIED = {SPEAKERS[s]: m[1] for s, c in CALLINGS.items() if (m := re.search(r"\(died (\d{4})\)", c))}  # name -> year
+
+
+def named(name: str) -> str:
+    """A talk's shown name with "(died 2025)" after each leader on it who has died, so living voices can come first."""
+    for person, year in DIED.items():
+        name = name.replace(person, f"{person} (died {year})")
+    return name
 
 
 def match_query(query: str) -> str:
@@ -108,7 +118,7 @@ def talk_text(con: sqlite3.Connection, talk: str, start: int | None = None, end:
     _, _, name, title, source, date, _ = paras[1]
     shown = "" if (first, last) == (1, total) else f", showing ¶{first}–¶{last}"
     header = (
-        f'# "{title}"\n{name} · {source}, {date}\nSource: {url}\n'
+        f'# "{title}"\n{named(name)} · {source}, {date}\nSource: {url}\n'
         f"Talk ID: {tid} · {total} paragraphs{shown}\n¶ numbers count this talk's own paragraphs, not the website's."
     )
     return header + "\n\n" + "\n".join(lines) + more
@@ -333,7 +343,7 @@ def search_passages(
     for rowid, name, title, source, date, url, anchor, text in passages:
         n = numbers[rowid]
         link = f"{url}&id={anchor}#{anchor}" if anchor else url  # conference links jump to the paragraph
-        entry = f'## {len(out) + 1}. {name}, "{title}" ¶{n}\n{source}, {date}\nTalk ID: {talk_id(url)}\nSource: {link}'
+        entry = f'## {len(out) + 1}. {named(name)}, "{title}" ¶{n}\n{source}, {date}\nTalk ID: {talk_id(url)}\nSource: {link}'
         if cite:
             entry += "\n" + cites_line(book, chapter, found[url, n])
         entry += f"\n\n{text}"
@@ -437,7 +447,7 @@ def list_sources(
     rows = con.execute(f"SELECT DISTINCT name, date, source, title, url FROM passages WHERE {' AND '.join(where) or '1'}", params).fetchall()
     rows.sort(key=lambda r: (given_order(r[4]), r[4]))
     rows.sort(key=lambda r: r[1], reverse=True)  # newest first; the sort is stable, so each date keeps the order given
-    lines = [f"- {name}, {date}, {source}: {title} · Talk ID: {talk_id(url)} · {url}" for name, date, source, title, url in rows[:MAX_LISTED]]
+    lines = [f"- {named(name)}, {date}, {source}: {title} · Talk ID: {talk_id(url)} · {url}" for name, date, source, title, url in rows[:MAX_LISTED]]
     if len(rows) > MAX_LISTED:
         lines.append(f"Showing the newest {MAX_LISTED} of {len(rows)} talks. Narrow with from_date/to_date or sources to see the rest.")
     return "\n".join(lines) or "No talks match those filters."
@@ -462,7 +472,7 @@ def recent_additions(con: sqlite3.Connection, speaker: str | None, days: int = 3
     ).fetchall()
     if not rows:
         return f"{status}\nNothing added in the last {days} days."
-    lines = [f"- added {added}: {name}, {date}, {source}: {title} · Talk ID: {talk_id(url)} · {url}" for added, name, date, source, title, url in rows]
+    lines = [f"- added {added}: {named(name)}, {date}, {source}: {title} · Talk ID: {talk_id(url)} · {url}" for added, name, date, source, title, url in rows]
     return f"{status}\n{len(rows)} added in the last {days} days, newest first:\n" + "\n".join(lines)
 
 

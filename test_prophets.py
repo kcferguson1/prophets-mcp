@@ -248,6 +248,13 @@ assert list_sources(con, "nobody", None).startswith("Unknown speaker: nobody. Sp
 server.MAX_LISTED = 2
 assert list_sources(con, None, None, "2026-10", "2026-10").endswith("\nShowing the newest 2 of 3 talks. Narrow with from_date/to_date or sources to see the rest.")
 server.MAX_LISTED = 250
+# Leaders who have died are marked wherever a name shows, so living voices can come first; a joint talk marks only them.
+nelson = "https://www.churchofjesuschrist.org/study/general-conference/2024/10/57nelson?lang=eng"
+con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Joy", "Joy is a gift for the faithful who strive to live righteously and follow the Savior.", "russell-m-nelson", "Russell M. Nelson and Wendy W. Nelson", "General Conference", "2024-10", nelson, "p1"))
+assert '## 1. Russell M. Nelson (died 2025) and Wendy W. Nelson, "Joy" ¶1\n' in search_passages(con, "joy faithful strive", ["russell-m-nelson"])
+assert "\nRussell M. Nelson (died 2025) and Wendy W. Nelson · General Conference, 2024-10\n" in talk_text(con, nelson)
+assert "- Russell M. Nelson (died 2025) and Wendy W. Nelson, 2024-10" in list_sources(con, "russell-m-nelson")
+assert "(died" not in list_sources(con, "henry-b-eyring")
 assert "Old News" in recent_additions(con, "dallin-h-oaks", 90)
 assert "Nothing added" in recent_additions(con, "henry-b-eyring", 30)
 assert "No full update has finished yet." in new  # the test index has never finished a full run

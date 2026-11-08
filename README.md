@@ -103,7 +103,7 @@ Source: https://www.churchofjesuschrist.org/study/general-conference/2026/04/15g
 Come home! Come home! Ye who are weary, come home!
 ```
 
-Conference links jump straight to the quoted paragraph. BYU links open the speech. ¶ numbers count the talk's own paragraphs (footnotes and captions aren't paragraphs), so pass the talk ID to `get_talk` to read around a passage.
+Conference links jump straight to the quoted paragraph. A leader who has died is marked wherever a name shows, as in "Russell M. Nelson (died 2025)". BYU links open the speech. ¶ numbers count the talk's own paragraphs (footnotes and captions aren't paragraphs), so pass the talk ID to `get_talk` to read around a passage.
 
 ## Prophets and apostles
 

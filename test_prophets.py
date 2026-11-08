@@ -269,6 +269,18 @@ assert "my shepherd" in lookup_verses(con, "Psalms 23:1")
 assert "No book called" in lookup_verses(con, "Hezekiah 1:1")
 assert "has no verse 9" in lookup_verses(con, "Moroni 10:9")
 assert "Give a reference" in lookup_verses(con, "Moroni")
+# Context: verses around the request, within the chapter; the heading names only what was asked, and the asked verses are bold.
+assert lookup_verses(con, "Moroni 10:4", context=1) == """## Moroni 10:4 (with 1 verse of context)
+Source: https://s/Moroni/10?lang=eng&id=p4#p4
+
+3 Behold, I would exhort you.
+**4** Ask God with a sincere heart, with real intent, having faith in Christ.
+5 By the power of the Holy Ghost ye may know the truth of all things.""", lookup_verses(con, "Moroni 10:4", context=1)
+edge = lookup_verses(con, "Moroni 10:4-5", context=3)  # the chapter's stored verses run out after 5: no error, nothing invented
+assert edge.startswith("## Moroni 10:4-5 (with 3 verses of context)\n") and edge.endswith("\n3 Behold, I would exhort you.\n**4** Ask God with a sincere heart, with real intent, having faith in Christ.\n**5** By the power of the Holy Ghost ye may know the truth of all things."), edge
+assert "has no verse 9" in lookup_verses(con, "Moroni 10:9", context=10)  # neighbours exist, the asked verse doesn't
+assert lookup_verses(con, "Moroni 10", context=2) == lookup_verses(con, "Moroni 10")  # a whole chapter has nothing around it
+assert lookup_verses(con, "Moroni 10:4-5", context=-1) == lookup_verses(con, "Moroni 10:4-5")  # negative context means none
 assert "## Moroni 10:4\n" in search_verses(con, "sincere intent", None)
 assert "No verse matched" in search_verses(con, "sincere intent", "ot")  # volume filter, by short name
 assert "Psalm 23:1" in search_verses(con, "shepherd", "Old Testament")

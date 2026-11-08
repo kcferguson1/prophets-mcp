@@ -82,7 +82,7 @@ To update right away, run `uv run fetch.py`. When the roster changes, run `git p
 | | `whats_new(days, speaker?)` | Lists talks added by updates in the last `days` days (default 30), and when the last update finished |
 | Both | `get_talk(talk, start?, end?)` | Returns a talk's full text as numbered paragraphs, by talk ID or source link, about 5,000 words per call (a one-speaker server opens only that speaker's talks) |
 | | `search_scriptures(query, volume?, limit)` | Searches the standard works, or one volume (`ot`, `nt`, `bofm`, `dc-testament`, `pgp`), and returns verses with a link to each |
-| | `get_verses(reference)` | Returns the exact text of a reference like `Moroni 10:4-5`, `D&C 121:7` or `Alma 32` (a whole chapter) |
+| | `get_verses(reference, context?)` | Returns the exact text of a reference like `Moroni 10:4-5`, `D&C 121:7` or `Alma 32` (a whole chapter); `context` (0–10) adds verses before and after, within the chapter |
 
 **Search filters.** Put a phrase in double quotes to match those exact words in order: `"faith in Jesus Christ" repentance`. Capitals, punctuation, accents and straight or curly apostrophes don't matter. `from_date` and `to_date` are inclusive and take `2015`, `2015-04` or `2015-04-12`. `sources` takes any of General Conference, BYU Speeches, Church broadcast, Liahona, Ensign, New Era, For the Strength of Youth.
 

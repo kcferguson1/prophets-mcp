@@ -226,7 +226,7 @@ def book_key(name: str) -> str:
     return BOOK_ALIASES.get(key, key)
 
 
-def lookup_verses(con: sqlite3.Connection, reference: str) -> str:
+def lookup_verses(con: sqlite3.Connection, reference: str, context: int = 0) -> str:
     if not con.execute("SELECT 1 FROM verses LIMIT 1").fetchone():
         return NO_SCRIPTURES
     ref = re.fullmatch(r"\s*(.+?)\s+(\d+)(?::(\d+)(?:\s*[-–]\s*(\d+))?)?\s*", reference)
@@ -239,16 +239,20 @@ def lookup_verses(con: sqlite3.Connection, reference: str) -> str:
     chapter = int(ref[2])
     first = int(ref[3] or 1)
     last = int(ref[4] or ref[3] or 10_000)  # no verse given: the whole chapter
+    around = max(context, 0) if ref[3] else 0  # a whole chapter has nothing around it
     rows = con.execute(
         """SELECT CAST(verse AS INTEGER) AS v, text, url, anchor FROM verses
            WHERE book = ? AND CAST(chapter AS INTEGER) = ? AND v BETWEEN ? AND ? ORDER BY v""",
-        (book, chapter, first, last),
+        (book, chapter, first - around, last + around),
     ).fetchall()
-    if not rows:
+    asked = [r for r in rows if first <= r[0] <= last]
+    if not asked:
         return f"{book} {chapter} has no verse {first}." if ref[3] else f"{book} has no chapter {chapter}."
-    span = f"{rows[0][0]}-{rows[-1][0]}" if len(rows) > 1 else f"{rows[0][0]}"
-    lines = "\n".join(f"{v} {text}" for v, text, _, _ in rows)
-    return f"## {book} {chapter}:{span}\nSource: {verse_link(rows[0][2], rows[0][3])}\n\n{lines}"
+    span = f"{asked[0][0]}-{asked[-1][0]}" if len(asked) > 1 else f"{asked[0][0]}"
+    note = f" (with {around} verse{'s' if around > 1 else ''} of context)" if around else ""
+    # With context, the asked-for verse numbers are bold so they stand out from the verses around them.
+    lines = "\n".join(f"**{v}** {text}" if around and first <= v <= last else f"{v} {text}" for v, text, _, _ in rows)
+    return f"## {book} {chapter}:{span}{note}\nSource: {verse_link(asked[0][2], asked[0][3])}\n\n{lines}"
 
 
 def list_sources(con: sqlite3.Connection, speaker: str | None) -> str:
@@ -366,9 +370,9 @@ def main():
     def search_scriptures(query: str, volume: str | None = None, limit: int = 8) -> str:
         return search_verses(con, query, volume, max(1, min(limit, 20)))
 
-    @mcp.tool(description=f'Get the exact text of a scripture reference, like "Moroni 10:4-5", "D&C 121:7-8", "1 Nephi 3:7" or "Alma 32" (a whole chapter). {QUOTE_VERSES}')
-    def get_verses(reference: str) -> str:
-        return lookup_verses(con, reference)
+    @mcp.tool(description=f'Get the exact text of a scripture reference, like "Moroni 10:4-5", "D&C 121:7-8", "1 Nephi 3:7" or "Alma 32" (a whole chapter). Optional context (0-10) adds that many verses before and after, within the chapter; the asked-for verse numbers are then bold, only to tell them apart, so leave the bold out of quotes, and cite a context verse by its own number in the same chapter. {QUOTE_VERSES}')
+    def get_verses(reference: str, context: int = 0) -> str:
+        return lookup_verses(con, reference, max(0, min(context, 10)))
 
     if args.http:
         # Stateless: any request can land on a freshly restarted machine without losing a session.

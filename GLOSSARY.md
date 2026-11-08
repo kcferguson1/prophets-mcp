@@ -47,3 +47,11 @@ _Avoid_: Passage (that word belongs to talks)
 **Reference**:
 The written name of one or more verses: a book, a chapter, and optionally a verse or range, such as Moroni 10:4-5 or Alma 32.
 _Avoid_: Citation (reserved for a talk pointing at a verse)
+
+**Citation**:
+A paragraph of a talk pointing at one or more verses through a link or a written reference, in its text or its footnote. Every verse in a cited range or list is cited; a verse quoted without a reference is not.
+_Avoid_: Quote, mention
+
+**Chapter citation**:
+A citation of a whole chapter with no verses named, such as John 1. It does not count as citing any single verse.
+_Avoid_: Citation (when meaning a whole chapter)

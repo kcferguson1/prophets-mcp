@@ -11,3 +11,4 @@ Footnotes and scripture citations live in page HTML that `fetch.py` used to thro
 
 - An upgraded database is marked with SQLite's `user_version` (2); an older version triggers the one-time re-download at the next daily check, resumable talk by talk.
 - A ¶ number quoted before the upgrade may point one or two paragraphs off afterwards for some older talks; talk IDs never change.
+- How Church and BYU pages mark footnotes, scripture links and links to other talks (the starting point for re-reading saved pages for something new) is in [the markup research](https://github.com/kcferguson1/prophets-mcp/blob/research/footnote-citation-markup/research/footnote-citation-markup.md), kept on its own unmerged branch.

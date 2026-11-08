@@ -78,11 +78,11 @@ After a `git pull` that adds footnotes and scripture citations, the server downl
 | Server | Tool | What it does |
 |---|---|---|
 | One speaker (`--speaker <slug>`) | `search(query, limit, from_date?, to_date?, sources?, cites?)` | Searches that speaker's talks and returns passages in their own words, each with its paragraph number, talk ID, title, date and source link |
-| | `list_talks()` | Lists every talk and speech in that speaker's collection, newest first |
+| | `list_talks(from_date?, to_date?, sources?)` | Lists that speaker's talks and speeches, newest first, each with its talk ID |
 | | `whats_new(days)` | Lists that speaker's talks added by updates in the last `days` days (default 30) |
 | Everyone (no `--speaker`) | `search(query, speakers?, limit, from_date?, to_date?, sources?, cites?)` | Searches all speakers, or only the slugs you list |
 | | `list_speakers()` | Lists every speaker, their slug and how many talks they have |
-| | `list_talks(speaker)` | Lists one speaker's talks, newest first |
+| | `list_talks(speaker?, from_date?, to_date?, sources?)` | Lists one speaker's talks, or everyone's in a date range: `from_date` and `to_date` `2026-10` with `sources` General Conference lists that conference's talks in the order given. At most 250 at a time |
 | | `whats_new(days, speaker?)` | Lists talks added by updates in the last `days` days (default 30), and when the last update finished |
 | Both | `get_talk(talk, start?, end?)` | Returns a talk's full text as numbered paragraphs, by talk ID or source link, about 5,000 words per call (a one-speaker server opens only that speaker's talks) |
 | | `search_scriptures(query, volume?, limit)` | Searches the standard works, or one volume (`ot`, `nt`, `bofm`, `dc-testament`, `pgp`), and returns verses with a link to each |

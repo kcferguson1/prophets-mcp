@@ -19,6 +19,7 @@ from mcp.server.mcpserver import MCPServer
 
 from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, MAGAZINES, SPEAKERS, VERSION, VOLUMES, book_key, connect, hold_lock
 
+MAX_LISTED = 250  # per list_talks call, so a broad list can't flood the context; no speaker has this many yet
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
 MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
 FILLER = set(
@@ -227,10 +228,10 @@ def plain_words(text: str) -> str:
     return " ".join(re.findall(r"\w+", text.lower().replace("’", "").replace("'", "")))
 
 
-def search_passages(
-    con: sqlite3.Connection, query: str, speakers: list[str] | None, limit: int = 8, sources: list[str] | None = None,
-    from_date: str | None = None, to_date: str | None = None, cites: str | None = None,
-) -> str:
+def talk_filters(
+    speakers: list[str] | None, sources: list[str] | None, from_date: str | None, to_date: str | None
+) -> tuple[list[str], list] | str:
+    """WHERE clauses and their parameters for the speaker, source and date filters, or a message saying what's wrong."""
     for d in (from_date, to_date):
         if d and not real_date(d):
             return f'Dates look like 2015, 2015-04 or 2015-04-12, not "{d}".'
@@ -240,6 +241,29 @@ def search_passages(
         return f"Unknown speaker: {', '.join(unknown)}. Speakers: {', '.join(SPEAKERS)}."
     if unknown := [s for s in sources or [] if s.lower() not in SOURCE_NAMES]:
         return f"Unknown source: {', '.join(unknown)}. Sources: {', '.join(SOURCES)}."
+    where, params = [], []
+    if speakers:
+        where.append(f"speaker IN ({','.join('?' * len(speakers))})")
+        params += speakers
+    if sources:
+        where.append(f"source IN ({','.join('?' * len(sources))})")
+        params += [SOURCE_NAMES[s.lower()] for s in sources]
+    # Stored dates are 2025-04 or 2025-08-22. Comparing at the shorter of the two lengths keeps both ends inclusive:
+    # 2025-10 is inside 2025-10-01..2025-10-31, and 2025-08-22 is inside ..2025. Undated talks never match a date filter.
+    for bound, op in ((from_date, ">="), (to_date, "<=")):
+        if bound:
+            where.append(f"date <> '' AND substr(date, 1, min(length(date), ?)) {op} substr(?, 1, min(length(date), ?))")
+            params += [len(bound), bound, len(bound)]
+    return where, params
+
+
+def search_passages(
+    con: sqlite3.Connection, query: str, speakers: list[str] | None, limit: int = 8, sources: list[str] | None = None,
+    from_date: str | None = None, to_date: str | None = None, cites: str | None = None,
+) -> str:
+    filters = talk_filters(speakers, sources, from_date, to_date)
+    if isinstance(filters, str):
+        return filters
     phrases = [p for p in PHRASE.findall(query) if re.search(r"\w", p)]
     match = match_query(PHRASE.sub(" ", query))  # the words outside quotes, matched broadly
     # Each phrase is required; FTS5's own phrase match (stemmed) narrows the candidates, the exact check comes below.
@@ -269,18 +293,8 @@ def search_passages(
             return "\n".join([*progress, f"No talks{by} cite {shown_ref}."])
         where.append(f"url IN ({','.join('?' * len(cited))})")
         params += cited
-    if speakers:
-        where.append(f"speaker IN ({','.join('?' * len(speakers))})")
-        params += speakers
-    if sources:
-        where.append(f"source IN ({','.join('?' * len(sources))})")
-        params += [SOURCE_NAMES[s.lower()] for s in sources]
-    # Stored dates are 2025-04 or 2025-08-22. Comparing at the shorter of the two lengths keeps both ends inclusive:
-    # 2025-10 is inside 2025-10-01..2025-10-31, and 2025-08-22 is inside ..2025. Undated talks never match a date filter.
-    for bound, op in ((from_date, ">="), (to_date, "<=")):
-        if bound:
-            where.append(f"date <> '' AND substr(date, 1, min(length(date), ?)) {op} substr(?, 1, min(length(date), ?))")
-            params += [len(bound), bound, len(bound)]
+    where += filters[0]
+    params += filters[1]
     order = "bm25(passages, 1.0, 1.0)" if match else "date DESC, rowid"  # cites with no words: newest first, in reading order
     rows = con.execute(
         f"""SELECT rowid, name, title, source, date, url, anchor, text FROM passages WHERE {' AND '.join(where)}
@@ -405,13 +419,28 @@ def citation_counts(con: sqlite3.Connection, book: str, chapter: int, asked: lis
     return "\n".join(lines)
 
 
-def list_sources(con: sqlite3.Connection, speaker: str | None) -> str:
-    rows = con.execute(
-        """SELECT DISTINCT name, date, source, title, url FROM passages
-           WHERE ? IS NULL OR speaker = ? ORDER BY name, date DESC""",
-        (speaker, speaker),
-    )
-    return "\n".join(f"- {name}, {date}, {source}: {title} · Talk ID: {talk_id(url)} · {url}" for name, date, source, title, url in rows)
+def given_order(url: str) -> tuple[int, int]:
+    """(session, talk) from a conference link: ".../2026/10/210rasband" is session 2, talk 10. Text order would put it
+    before "27kearon". Links without the numbers (older talks, other sources) come after, in link order."""
+    m = re.search(r"/\d{4}/\d{2}/(\d)(\d+)[^\d/?]", url)
+    return (int(m[1]), int(m[2])) if m else (99, 0)
+
+
+def list_sources(
+    con: sqlite3.Connection, speaker: str | None, sources: list[str] | None = None, from_date: str | None = None, to_date: str | None = None
+) -> str:
+    """Talks newest first; a conference's talks in the order given."""
+    filters = talk_filters([speaker] if speaker else None, sources, from_date, to_date)
+    if isinstance(filters, str):
+        return filters
+    where, params = filters
+    rows = con.execute(f"SELECT DISTINCT name, date, source, title, url FROM passages WHERE {' AND '.join(where) or '1'}", params).fetchall()
+    rows.sort(key=lambda r: (given_order(r[4]), r[4]))
+    rows.sort(key=lambda r: r[1], reverse=True)  # newest first; the sort is stable, so each date keeps the order given
+    lines = [f"- {name}, {date}, {source}: {title} · Talk ID: {talk_id(url)} · {url}" for name, date, source, title, url in rows[:MAX_LISTED]]
+    if len(rows) > MAX_LISTED:
+        lines.append(f"Showing the newest {MAX_LISTED} of {len(rows)} talks. Narrow with from_date/to_date or sources to see the rest.")
+    return "\n".join(lines) or "No talks match those filters."
 
 
 def recent_additions(con: sqlite3.Connection, speaker: str | None, days: int = 30) -> str:
@@ -486,9 +515,9 @@ def main():
         def search(query: str = "", limit: int = 8, from_date: str | None = None, to_date: str | None = None, sources: list[str] | None = None, cites: str | None = None) -> str:
             return search_passages(con, query, [speaker], max(1, min(limit, 20)), sources, from_date, to_date, cites)
 
-        @mcp.tool(description=f"List every talk and speech in {name}'s collection, newest first.")
-        def list_talks() -> str:
-            return list_sources(con, speaker)
+        @mcp.tool(description=f"List {name}'s talks and speeches, newest first, each with its talk ID for get_talk. Optional from_date and to_date (inclusive; 2026-10 is that month's General Conference) and sources narrow it.")
+        def list_talks(from_date: str | None = None, to_date: str | None = None, sources: list[str] | None = None) -> str:
+            return list_sources(con, speaker, sources, from_date, to_date)
 
         @mcp.tool(description=f"Show which of {name}'s talks and articles the weekly update added in the last `days` days, and when the last update ran.")
         def whats_new(days: int = 30) -> str:
@@ -509,9 +538,9 @@ def main():
                 for slug, name in SPEAKERS.items()
             )
 
-        @mcp.tool(description="List every talk and speech for one speaker slug, newest first.")
-        def list_talks(speaker: str) -> str:
-            return list_sources(con, speaker) or f"No talks for '{speaker}'. Call list_speakers."
+        @mcp.tool(description="List talks and speeches, newest first, each with its talk ID for get_talk: one speaker's (a slug from list_speakers), or everyone's in a date range, such as a General Conference (from_date and to_date 2026-10, sources General Conference), listed in the order given. Optional sources narrow it. At most 250 at a time.")
+        def list_talks(speaker: str | None = None, from_date: str | None = None, to_date: str | None = None, sources: list[str] | None = None) -> str:
+            return list_sources(con, speaker, sources, from_date, to_date)
 
         @mcp.tool(description="Show which talks and articles the weekly update added in the last `days` days, and when the last update ran. Optionally limit to one speaker slug.")
         def whats_new(days: int = 30, speaker: str | None = None) -> str:

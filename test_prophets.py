@@ -235,6 +235,19 @@ new = recent_additions(con, None, 30)
 assert new.count("New Light") == 1 and "Old News" not in new and "Video Only" not in new and "1 added" in new, new
 assert ": New Light · Talk ID: liahona/2026/11/new-light · https://" in new, new  # every listed talk shows its ID
 assert "- Clark G. Gilbert, 2026-04, General Conference: Come Home · Talk ID: general-conference/2026/04/15gilbert · https://" in list_sources(con, "clark-g-gilbert")
+# list_talks across speakers: a conference by date and source, in the order its talks were given (their link numbers).
+conf = "https://www.churchofjesuschrist.org/study/general-conference/2026/10/"
+for n, slug, title in ((510, "dallin-h-oaks", "Closing Remarks"), (12, "henry-b-eyring", "Fear Not"), (51, "gerrit-w-gong", "Holy House")):
+    con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", (title, "x", slug, SPEAKERS[slug], "General Conference", "2026-10", f"{conf}{n}x?lang=eng", "p1"))
+october = list_sources(con, None, ["general conference"], "2026-10", "2026-10")  # 510 is session 5, talk 10: after 51
+assert [line.split(": ", 1)[1].split(" · ")[0] for line in october.split("\n")] == ["Fear Not", "Holy House", "Closing Remarks"], october
+assert list_sources(con, "henry-b-eyring", None, "2026-10", "2026-10").count("\n") == 0  # one speaker, one talk
+assert list_sources(con, None, None, "2031") == "No talks match those filters."
+assert list_sources(con, None, None, "fall 2026") == 'Dates look like 2015, 2015-04 or 2015-04-12, not "fall 2026".'
+assert list_sources(con, "nobody", None).startswith("Unknown speaker: nobody. Speakers: dallin-h-oaks,")
+server.MAX_LISTED = 2
+assert list_sources(con, None, None, "2026-10", "2026-10").endswith("\nShowing the newest 2 of 3 talks. Narrow with from_date/to_date or sources to see the rest.")
+server.MAX_LISTED = 250
 assert "Old News" in recent_additions(con, "dallin-h-oaks", 90)
 assert "Nothing added" in recent_additions(con, "henry-b-eyring", 30)
 assert "No full update has finished yet." in new  # the test index has never finished a full run

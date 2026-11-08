@@ -109,6 +109,7 @@ def update_if_stale():
         [sys.executable, "-u", str(Path(__file__).with_name("fetch.py"))],  # -u: unbuffered, so the log shows each talk as it's saved
         stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
     )
+    log.close()  # the update has its own copy
 
 
 def main():

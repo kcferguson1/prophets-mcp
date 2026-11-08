@@ -421,6 +421,8 @@ def reprint(con, slug, src, title, date) -> bool:
 
 def save(con, slug, src, title, date, url, paras, shown=None):
     """Store a talk under one of our speakers; shown names everyone on a joint talk."""
+    if not paras:
+        return  # audio- or video-only: nothing to search, and leaving it unsaved means a later transcript is picked up
     shown = shown or SPEAKERS[slug]
     con.executemany(
         "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",

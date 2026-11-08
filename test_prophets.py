@@ -11,6 +11,7 @@ os.environ["PROPHETS_DB"] = os.path.join(tempfile.mkdtemp(), "prophets.db")  # n
 
 import fetch  # noqa: E402
 from fetch import CALLINGS, SPEAKERS, connect, credits, hold_lock, magazine_articles, page, paragraphs, recent, record, reprint, walk  # noqa: E402
+import server  # noqa: E402
 from server import recent_additions, search_passages  # noqa: E402
 
 # The update lock: one holder at a time, and the operating system frees it when the holder exits, even on a crash.
@@ -145,10 +146,33 @@ assert set(CALLINGS) == set(SPEAKERS), set(CALLINGS) ^ set(SPEAKERS)  # every sp
 fetch.save(con, "camille-n-johnson", "Liahona", "New Light", "2026-11", "https://n/l?lang=eng", [("p1", "x")], both)
 fetch.save(con, "j-anette-dennis", "Liahona", "New Light", "2026-11", "https://n/l?lang=eng", [("p1", "x")], both)
 fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Old News", "2020-01-01", "https://o/n/", [(None, "x")])
+fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Video Only", "2026-11-01", "https://v/o/", [])  # no transcript: not saved
 con.execute("UPDATE added SET at = datetime('now', '-60 days') WHERE title = 'Old News'")
 new = recent_additions(con, None, 30)
-assert new.count("New Light") == 1 and "Old News" not in new and "1 added" in new, new
+assert new.count("New Light") == 1 and "Old News" not in new and "Video Only" not in new and "1 added" in new, new
 assert "Old News" in recent_additions(con, "dallin-h-oaks", 90)
 assert "Nothing added" in recent_additions(con, "henry-b-eyring", 30)
 assert "No full update has finished yet." in new  # the test index has never finished a full run
+
+# An update starts when no full check has finished or the last is over a week old, and never while one is running.
+started = []
+real_popen = server.subprocess.Popen
+server.subprocess.Popen = lambda *a, **k: started.append(a)
+try:
+    fetch.CHECKED.unlink(missing_ok=True)
+    server.update_if_stale()
+    assert len(started) == 1, "no full check yet: update"
+    fetch.CHECKED.touch()
+    server.update_if_stale()
+    assert len(started) == 1, "checked just now: wait"
+    eight_days_ago = time.time() - 8 * 86400
+    os.utime(fetch.CHECKED, (eight_days_ago, eight_days_ago))
+    server.update_if_stale()
+    assert len(started) == 2, "over a week old: update"
+    running = hold_lock()
+    server.update_if_stale()
+    assert len(started) == 2, "an update is running: leave it alone"
+    running.close()
+finally:
+    server.subprocess.Popen = real_popen
 print("ok")

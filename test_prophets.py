@@ -254,6 +254,7 @@ fetch.api = lambda kind, uri: {"toc": ["/scriptures/dc-testament/od/2"]} if kind
 assert [row[0] for _, rows in fetch.scriptures(set()) for row in rows] == ["Official Declaration 2:1", "Official Declaration 2:2"]  # nothing numbered: all kept
 fetch.api = real_api
 
+con.execute(f"PRAGMA user_version = {fetch.VERSION}")  # citations built (none cite these verses)
 assert "haven't been downloaded" in lookup_verses(con, "Moroni 10:4") and "haven't been downloaded" in search_verses(con, "faith", None)
 for ref, text, volume, book, ch, v in [
     ("Moroni 10:3", "Behold, I would exhort you.", "Book of Mormon", "Moroni", 10, 3),
@@ -278,9 +279,11 @@ Source: https://s/Moroni/10?lang=eng&id=p4#p4
 
 3 Behold, I would exhort you.
 **4** Ask God with a sincere heart, with real intent, having faith in Christ.
-5 By the power of the Holy Ghost ye may know the truth of all things.""", lookup_verses(con, "Moroni 10:4", context=1)
+5 By the power of the Holy Ghost ye may know the truth of all things.
+
+No talks cite these verses.""", lookup_verses(con, "Moroni 10:4", context=1)
 edge = lookup_verses(con, "Moroni 10:4-5", context=3)  # the chapter's stored verses run out after 5: no error, nothing invented
-assert edge.startswith("## Moroni 10:4-5 (with 3 verses of context)\n") and edge.endswith("\n3 Behold, I would exhort you.\n**4** Ask God with a sincere heart, with real intent, having faith in Christ.\n**5** By the power of the Holy Ghost ye may know the truth of all things."), edge
+assert edge.startswith("## Moroni 10:4-5 (with 3 verses of context)\n") and edge.endswith("\n3 Behold, I would exhort you.\n**4** Ask God with a sincere heart, with real intent, having faith in Christ.\n**5** By the power of the Holy Ghost ye may know the truth of all things.\n\nNo talks cite these verses."), edge
 assert "has no verse 9" in lookup_verses(con, "Moroni 10:9", context=10)  # neighbours exist, the asked verse doesn't
 assert lookup_verses(con, "Moroni 10", context=2) == lookup_verses(con, "Moroni 10")  # a whole chapter has nothing around it
 assert lookup_verses(con, "Moroni 10:4-5", context=-1) == lookup_verses(con, "Moroni 10:4-5")  # negative context means none
@@ -400,6 +403,56 @@ assert fetch.reread(up) is True and up.execute("PRAGMA user_version").fetchone()
 assert up.execute("SELECT note, text FROM footnotes WHERE url = ?", (speech_url,)).fetchall() == [(2, "Matthew 10:39; quoted in Marion G. Romney.")]
 assert "Citation data" not in recent_additions(up, None)
 fetch.api, fetch.get = real_api, real_get
+
+# Citation counts in get_verses: asked-for verses only, zeros left out, a whole chapter's own count, a pointer to cites.
+intent = "https://www.churchofjesuschrist.org/study/general-conference/2023/10/intent?lang=eng"
+up.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Real Intent", "Ask God with real intent and the Holy Ghost will manifest the truth of it unto you.",
+                                                          "dallin-h-oaks", "Dallin H. Oaks", "General Conference", "2023-10", intent, "p1"))
+up.execute("INSERT INTO citations VALUES (?, 1, ?, 4, 3)", (intent, moro))
+long_note = "See Moroni 10:4. " + "word " * 68  # 70 words
+up.execute("INSERT INTO footnotes VALUES (?, 1, 3, ?)", (intent, long_note.strip()))
+up.execute("INSERT INTO reread VALUES (?)", (intent,))
+pointer = 'To read the citing passages, call search with cites="Moroni 10:4-5" (query can be empty).'
+assert lookup_verses(up, "Moroni 10:4-5").endswith("\n\nTalks citing each verse: 4 — 2 · 5 — 1\n" + pointer), lookup_verses(up, "Moroni 10:4-5")
+assert "\n\nTalks by Henry B. Eyring citing each verse: 4 — 1 · 5 — 1\n" in lookup_verses(up, "Moroni 10:4-5", speaker="henry-b-eyring")
+assert lookup_verses(up, "Moroni 10:3").endswith("\n\nNo talks cite these verses.")
+assert lookup_verses(up, "Moroni 10:4", speaker="gerrit-w-gong").endswith("\n\nNo talks by Gerrit W. Gong cite these verses.")
+up.execute("INSERT INTO citations VALUES (?, 1, ?, NULL, NULL)", (gone, moro))  # a whole-chapter citation
+assert lookup_verses(up, "Moroni 10").endswith(
+    "\n\nTalks citing each verse: 4 — 2 · 5 — 1\nMoroni 10 is also cited as a whole chapter by 1 talk.\n"
+    'To read the citing passages, call search with cites="Moroni 10" (query can be empty).'), lookup_verses(up, "Moroni 10")
+assert "whole chapter" not in lookup_verses(up, "Moroni 10:4-5")  # verse lookups never show chapter citations
+
+# The cites filter: the citing paragraph, a Cites line saying where, newest first with no words, a total first.
+four = search_passages(up, "", None, cites="Moroni 10:4")
+assert four.startswith("2 talks cite Moroni 10:4; showing 2 passages, newest first.\n\n## 1. Dallin H. Oaks, \"Real Intent\" ¶1\n"), four
+assert "\nCites: Moroni 10:4 (footnote 3)\n\nAsk God with real intent" in four, four
+assert "## 2. Both, \"Ask\" ¶1\n" in four and "\nCites: Moroni 10:4 (footnote 1)\n\nAsk in faith." in four and four.count("Ask in faith.") == 1, four  # a joint talk once
+# Footnotes under each passage, numbered the talk's way; a long one is cut at 60 words and points to get_talk.
+assert "\n\nFootnotes:\n1. See Moroni 10:4, 5." in four, four
+assert "\n\nFootnotes:\n3. See Moroni 10:4. " + "word " * 56 + "word … (rest in get_talk, ¶1)" in four, four
+assert "Cites: Moroni 10:4-5 (footnote 1)" in search_passages(up, "", None, cites="Moroni 10:4-5")  # a range, as a range
+chapter_hits = search_passages(up, "", None, cites="Moroni 10")
+assert chapter_hits.startswith("3 talks cite Moroni 10;") and "Cites: Moroni 10 (whole chapter)\n\nText we still have." in chapter_hits, chapter_hits
+assert search_passages(up, "real intent", None, cites="Moroni 10").startswith("1 talk cites Moroni 10; showing 1 passage, best matches first.\n")
+assert search_passages(up, "", None, cites="Moroni 10:4", limit=1).startswith(
+    "2 talks cite Moroni 10:4; showing 1 passage, newest first. Narrow with from_date/to_date, speakers or sources to see the rest.\n")
+assert "Narrow with from_date/to_date or sources to see" in search_passages(up, "", ["dallin-h-oaks"], cites="Moroni 10:4", limit=1)
+assert search_passages(up, "", None, cites="Moroni 10:4", from_date="2024") == "2 talks cite Moroni 10:4, but none match the other filters."
+assert search_passages(up, "", ["gerrit-w-gong"], cites="Moroni 10:4") == "No talks by Gerrit W. Gong cite Moroni 10:4."
+assert search_passages(up, "", None, cites="Moroni 10:3") == "No talks cite Moroni 10:3."
+assert search_passages(up, "", None, cites="Hezekiah 1:1") == 'No book called "Hezekiah" in the standard works.'
+assert search_passages(up, "", None, cites="Moroni 10:9") == "Moroni 10 has no verse 9."
+assert search_passages(up, "", None) == "Give a few words to search for."
+# While the re-read runs, counts give way to progress and cites says some talks may be missing.
+up.execute("PRAGMA user_version = 0")
+assert lookup_verses(up, "Moroni 10:4").endswith("\n\nCitation data is still being built: 4 of 4 talks done.")
+assert search_passages(up, "", None, cites="Moroni 10:4").startswith("Citation data is still being built: 4 of 4 talks done, so some citing talks may be missing.\n2 talks cite")
+up.execute(f"PRAGMA user_version = {fetch.VERSION}")
+# get_talk: footnotes whole, indented under their paragraph.
+assert talk_text(up, "general-conference/2022/04/57x").endswith(
+    "\n\n¶1 Ask in faith.\n    1. See Moroni 10:4, 5.\n¶2 Read D&C 76:58–59 often.\n    2. James E. Faust, “Salt Lake Tabernacle Rededication,” Liahona, May 2007, 39."), talk_text(up, "general-conference/2022/04/57x")
+assert talk_text(up, intent).endswith("\n    3. " + long_note.strip())
 
 # An update starts when no full check has finished or the last is over a week old, and never while one is running.
 started = []

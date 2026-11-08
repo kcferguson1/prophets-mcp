@@ -77,18 +77,20 @@ After a `git pull` that adds footnotes and scripture citations, the server downl
 
 | Server | Tool | What it does |
 |---|---|---|
-| One speaker (`--speaker <slug>`) | `search(query, limit, from_date?, to_date?, sources?)` | Searches that speaker's talks and returns passages in their own words, each with its paragraph number, talk ID, title, date and source link |
+| One speaker (`--speaker <slug>`) | `search(query, limit, from_date?, to_date?, sources?, cites?)` | Searches that speaker's talks and returns passages in their own words, each with its paragraph number, talk ID, title, date and source link |
 | | `list_talks()` | Lists every talk and speech in that speaker's collection, newest first |
 | | `whats_new(days)` | Lists that speaker's talks added by updates in the last `days` days (default 30) |
-| Everyone (no `--speaker`) | `search(query, speakers?, limit, from_date?, to_date?, sources?)` | Searches all speakers, or only the slugs you list |
+| Everyone (no `--speaker`) | `search(query, speakers?, limit, from_date?, to_date?, sources?, cites?)` | Searches all speakers, or only the slugs you list |
 | | `list_speakers()` | Lists every speaker, their slug and how many talks they have |
 | | `list_talks(speaker)` | Lists one speaker's talks, newest first |
 | | `whats_new(days, speaker?)` | Lists talks added by updates in the last `days` days (default 30), and when the last update finished |
 | Both | `get_talk(talk, start?, end?)` | Returns a talk's full text as numbered paragraphs, by talk ID or source link, about 5,000 words per call (a one-speaker server opens only that speaker's talks) |
 | | `search_scriptures(query, volume?, limit)` | Searches the standard works, or one volume (`ot`, `nt`, `bofm`, `dc-testament`, `pgp`), and returns verses with a link to each |
-| | `get_verses(reference, context?)` | Returns the exact text of a reference like `Moroni 10:4-5`, `D&C 121:7` or `Alma 32` (a whole chapter); `context` (0–10) adds verses before and after, within the chapter |
+| | `get_verses(reference, context?)` | Returns the exact text of a reference like `Moroni 10:4-5`, `D&C 121:7` or `Alma 32` (a whole chapter); `context` (0–10) adds verses before and after, within the chapter. After the verses, how many talks cite each one |
 
-**Search filters.** Put a phrase in double quotes to match those exact words in order: `"faith in Jesus Christ" repentance`. Capitals, punctuation, accents and straight or curly apostrophes don't matter. `from_date` and `to_date` are inclusive and take `2015`, `2015-04` or `2015-04-12`. `sources` takes any of General Conference, BYU Speeches, Church broadcast, Liahona, Ensign, New Era, For the Strength of Youth.
+**Search filters.** Put a phrase in double quotes to match those exact words in order: `"faith in Jesus Christ" repentance`. Capitals, punctuation, accents and straight or curly apostrophes don't matter. `from_date` and `to_date` are inclusive and take `2015`, `2015-04` or `2015-04-12`. `sources` takes any of General Conference, BYU Speeches, Church broadcast, Liahona, Ensign, New Era, For the Strength of Youth. `cites` takes one scripture reference (`Moroni 10:4`, `Moroni 10:3-5`, or `Alma 32` for the whole chapter) and keeps only paragraphs that cite it, each with a `Cites:` line saying where (`Moroni 10:4 (footnote 3)`); with no `query`, the newest come first.
+
+**Footnotes and citations.** Each passage lists its footnotes (cut at 60 words); `get_talk` shows them in full under each paragraph. A citation is a paragraph pointing at a verse, in its text or its footnote. Counts come from scripture links and references in talks and their footnotes; a verse quoted without a reference isn't counted. A whole-chapter citation (such as John 1) doesn't count toward any one verse.
 
 ### What an answer looks like
 
@@ -101,7 +103,7 @@ Source: https://www.churchofjesuschrist.org/study/general-conference/2026/04/15g
 Come home! Come home! Ye who are weary, come home!
 ```
 
-Conference links jump straight to the quoted paragraph. BYU links open the speech. ¶ numbers count the talk's own paragraphs (footnotes and captions aren't stored), so pass the talk ID to `get_talk` to read around a passage.
+Conference links jump straight to the quoted paragraph. BYU links open the speech. ¶ numbers count the talk's own paragraphs (footnotes and captions aren't paragraphs), so pass the talk ID to `get_talk` to read around a passage.
 
 ## Prophets and apostles
 

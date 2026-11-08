@@ -1,8 +1,8 @@
 <div align="center">
 
-# The Prophets
+# The Prophets and Apostles MCP
 
-**Prophets, apostles and the women who lead The Church of Jesus Christ of Latter-day Saints, in an MCP.**
+**Prophets, apostles and the women who lead The Church of Jesus Christ of Latter-day Saints (LDS), in an MCP server.**
 
 The First Presidency, the Quorum of the Twelve, and the Relief Society, Young Women and Primary general presidencies, each turned into a searchable MCP server built from their General Conference talks, devotionals, magazine articles and BYU speeches.<br>
 Add one to Claude, Cursor or Codex. Every answer cites its source.

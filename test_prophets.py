@@ -109,23 +109,63 @@ con.executemany(
         ("Talk B", "Repentance and joy belong together in the life of a disciple.", "henry-b-eyring", "Henry B. Eyring", "BYU Speeches", "1990-01-01", "https://y/b/", None),
     ],
 )
-out = search_passages(con, 'repenting "joy" OR -', "dallin-h-oaks")
+out = search_passages(con, 'repenting "joy" OR -', ["dallin-h-oaks"])
 assert "Source: https://x/a?lang=eng&id=p_2#p_2" in out, out  # conference links jump to the paragraph
 assert out.count("## ") == 2, out  # at most two passages per talk
 assert "p_4" not in out, out  # short paragraphs are skipped
 assert "Eyring" not in out, out  # speaker filter
-assert "Source: https://y/b/\n" in search_passages(con, "joy", "henry-b-eyring")  # no anchor, plain link
+assert "Source: https://y/b/\n" in search_passages(con, "joy", ["henry-b-eyring"])  # no anchor, plain link
 assert "Nothing matched" in search_passages(con, "zzz", None)
 assert "Nothing matched" in search_passages(con, "with you", None)  # filler words alone don't match "I am with you."
-assert "we can choose" in search_passages(con, "we can", "dallin-h-oaks")  # all filler: searched as typed
+assert "we can choose" in search_passages(con, "we can", ["dallin-h-oaks"])  # all filler: searched as typed
+
+# Filters. Several speakers at once; an unknown slug says so and lists the real ones instead of finding nothing.
+two = search_passages(con, "repentance joy", ["henry-b-eyring", "dallin-h-oaks"])
+assert "Henry B. Eyring" in two and "Dallin H. Oaks" in two, two
+assert search_passages(con, "joy", ["dallin-h-oakes"]).startswith("Unknown speaker: dallin-h-oakes. Speakers: dallin-h-oaks, henry-b-eyring,")
+# Sources, in any capitalization; an unknown one lists the seven.
+byu_only = search_passages(con, "repentance joy", None, sources=["byu speeches"])
+assert "BYU Speeches" in byu_only and "General Conference" not in byu_only, byu_only
+assert search_passages(con, "joy", None, sources=["Conference"]) == (
+    "Unknown source: Conference. Sources: General Conference, BYU Speeches, Church broadcast, Liahona, Ensign, New Era, For the Strength of Youth.")
+# Date ranges are inclusive and work on both stored forms (Oaks: 2025-10, Eyring: 1990-01-01).
+def speakers_found(**dates):
+    found = search_passages(con, "repentance joy", ["dallin-h-oaks", "henry-b-eyring"], **dates)
+    return {name for name in ("Oaks", "Eyring") if name in found}
+assert speakers_found(from_date="2000") == {"Oaks"}
+assert speakers_found(to_date="1990") == {"Eyring"}  # all of 1990, though Eyring's date has a day
+assert speakers_found(from_date="1990-01", to_date="1990-01") == {"Eyring"}
+assert speakers_found(from_date="2025-10", to_date="2025") == {"Oaks"}
+assert speakers_found(from_date="1990-01-01", to_date="2025-10") == {"Oaks", "Eyring"}
+assert search_passages(con, "joy", None, from_date="spring 2020") == 'Dates look like 2015, 2015-04 or 2015-04-12, not "spring 2020".'
+assert speakers_found(from_date="2025-10-01", to_date="2025-10-31") == {"Oaks"}  # a day-precise range still finds a month-only date
+for bad in ("2015-13", "2015-02-31"):
+    assert search_passages(con, "joy", None, to_date=bad) == f'Dates look like 2015, 2015-04 or 2015-04-12, not "{bad}".', bad
+assert search_passages(con, "joy", None, from_date="2021", to_date="2020") == "from_date 2021 is after to_date 2020."
 
 # A passage names its paragraph (counting the short paragraphs search hides) and its talk ID.
 home = "https://www.churchofjesuschrist.org/study/general-conference/2026/04/15gilbert?lang=eng"
 for n, text in enumerate(["Brothers and sisters, welcome.", "The prodigal son came to himself in a far country and arose.",
                           "Come home, ye who are weary, for the Father runs to meet every returning child."], 1):
     con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Come Home", text, "clark-g-gilbert", "Clark G. Gilbert", "General Conference", "2026-04", home, f"p{n}"))
-passage = search_passages(con, "weary returning child", "clark-g-gilbert")
+passage = search_passages(con, "weary returning child", ["clark-g-gilbert"])
 assert passage.startswith('## 1. Clark G. Gilbert, "Come Home" ¶3\nGeneral Conference, 2026-04\nTalk ID: general-conference/2026/04/15gilbert\nSource: '), passage
+# Quoted phrases match the same words in the same order, ignoring capitals, punctuation and quote or apostrophe style.
+con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("His Hand", "We have seen the Lord’s hand in the lives of His children, day after day.", "patrick-kearon", "Patrick Kearon", "General Conference", "2024-10", "https://www.churchofjesuschrist.org/study/general-conference/2024/10/hand?lang=eng", "p1"))
+weary = search_passages(con, '"ye who are weary"', None)
+assert "¶3" in weary, weary
+assert "¶3" in search_passages(con, "“Ye who are WEARY,”", None)  # curly quotes, capitals, punctuation
+assert "His Hand" in search_passages(con, '"the Lord\'s hand"', None)  # straight apostrophe finds a curly one
+assert "Nothing matched" in search_passages(con, '"return child"', None)  # stemming would match "returning child"; exact doesn't
+assert "Nothing matched" in search_passages(con, '"ye who were weary"', None)
+con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Ward", "On Sunday we met Brother José and Sister María at the chapel doors.", "patrick-kearon", "Patrick Kearon", "Liahona", "2024-05", "https://www.churchofjesuschrist.org/study/liahona/2024/05/ward?lang=eng", "p1"))
+assert "Ward" in search_passages(con, '"brother jose and sister maria"', None)  # accents don't count either
+# Near matches by word stem ("faith servant" for "faithful servant") can't crowd a real exact match out of the results.
+con.executemany("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", [("Near", "A faith servant serves.", "dallin-h-oaks", "Dallin H. Oaks", "Ensign", "2001-01", f"https://www.churchofjesuschrist.org/study/ensign/2001/01/near-{n}?lang=eng", "p1") for n in range(300)])
+con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Steward", "Well done, thou good and faithful servant: thou hast been faithful over a few things, and the Lord will make thee ruler over many.", "dallin-h-oaks", "Dallin H. Oaks", "Ensign", "2002-02", "https://www.churchofjesuschrist.org/study/ensign/2002/02/steward?lang=eng", "p1"))
+assert "Steward" in search_passages(con, '"faithful servant"', None, limit=1)
+mixed = search_passages(con, '"ye who are weary" prodigal', None)  # words outside the quotes don't let other paragraphs in
+assert "¶3" in mixed and "prodigal son" not in mixed, mixed
 
 # get_talk: a header, then every paragraph numbered in reading order.
 assert talk_text(con, "general-conference/2026/04/15gilbert") == """# "Come Home"
@@ -165,12 +205,12 @@ for slug in ("camille-n-johnson", "j-anette-dennis"):
     con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Joint", "Ministering together brings the healing power of the Savior to many.", slug, both, "Church broadcast", "2025-02", "https://z/j?lang=eng", "p1"))
 joint_out = search_passages(con, "ministering healing", None)
 assert joint_out.count("Ministering together") == 1 and both in joint_out, joint_out
-assert both in search_passages(con, "ministering healing", "j-anette-dennis")
+assert both in search_passages(con, "ministering healing", ["j-anette-dennis"])
 
 # A reprint under a new title shows its shared paragraph once; a reprint's source note isn't a passage at all.
 for url in ("https://b/holier/", "https://e/holier?lang=eng"):
     con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Holier", "Even in declaring His own divinity, Jesus ministered to the one.", "neil-l-andersen", "Neil L. Andersen", "Ensign", "2019-06", url, None))
-assert search_passages(con, "ministered divinity", "neil-l-andersen").count("Even in declaring") == 1
+assert search_passages(con, "ministered divinity", ["neil-l-andersen"]).count("Even in declaring") == 1
 assert paragraphs('<p>CES Devotional for Young Adults • May 4, 2014 • San Diego, California</p>') == []
 assert paragraphs('<p>From a devotional address, “A Holier Approach to Ministering,” delivered at Brigham Young University on April 10, 2018.</p>'
                   '<p>From the First Vision, we learn that because of the grace of our Savior we too can be forgiven.</p>') == [

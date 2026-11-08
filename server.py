@@ -10,11 +10,13 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
+from datetime import datetime
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, SPEAKERS, VOLUMES, connect, hold_lock
+from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, MAGAZINES, SPEAKERS, VOLUMES, connect, hold_lock
 
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
 MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
@@ -22,6 +24,13 @@ FILLER = set(
     "a about am an and are as at be but by can could did do does for from has have he her his how i if in into is it its "
     "me my not of on or our she should so than that the their them then there these they this to was we were what when "
     "where which who why will with would you your".split()
+)
+SOURCES = ("General Conference", "BYU Speeches", "Church broadcast", *MAGAZINES.values())  # the names fetch.py stores
+SOURCE_NAMES = {s.lower(): s for s in SOURCES}
+FILTERS = (
+    'Put a phrase in double quotes to match those exact words in order ("faith in Jesus Christ"). '
+    "Optional filters: from_date and to_date (inclusive; 2015, 2015-04 or 2015-04-12) and sources, a list of: "
+    + ", ".join(SOURCES) + "."
 )
 WORDS_PER_CALL = 5000  # per get_talk call: nearly every conference talk and most BYU speeches fit whole
 HOUR = 3600
@@ -110,22 +119,74 @@ def paragraph_numbers(con: sqlite3.Connection, urls: set[str]) -> dict[int, int]
     return numbers
 
 
-def search_passages(con: sqlite3.Connection, query: str, speaker: str | None, limit: int = 8) -> str:
-    match = match_query(query)
+PHRASE = re.compile(r'["“”]([^"“”]+)["“”]')  # a phrase in straight or curly double quotes
+
+
+def real_date(d: str) -> bool:
+    """2015, 2015-04 or 2015-04-12, and a date that exists."""
+    try:
+        datetime.strptime(d, {4: "%Y", 7: "%Y-%m", 10: "%Y-%m-%d"}[len(d)])
+        return True
+    except (KeyError, ValueError):
+        return False
+
+
+def plain_words(text: str) -> str:
+    """Text reduced for exact-phrase comparison: capitals, accents, punctuation and apostrophe style don't count."""
+    text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))  # José -> Jose, as the index does
+    return " ".join(re.findall(r"\w+", text.lower().replace("’", "").replace("'", "")))
+
+
+def search_passages(
+    con: sqlite3.Connection, query: str, speakers: list[str] | None, limit: int = 8, sources: list[str] | None = None,
+    from_date: str | None = None, to_date: str | None = None,
+) -> str:
+    for d in (from_date, to_date):
+        if d and not real_date(d):
+            return f'Dates look like 2015, 2015-04 or 2015-04-12, not "{d}".'
+    if from_date and to_date and from_date[:len(to_date)] > to_date[:len(from_date)]:
+        return f"from_date {from_date} is after to_date {to_date}."
+    if unknown := [s for s in speakers or [] if s not in SPEAKERS]:
+        return f"Unknown speaker: {', '.join(unknown)}. Speakers: {', '.join(SPEAKERS)}."
+    if unknown := [s for s in sources or [] if s.lower() not in SOURCE_NAMES]:
+        return f"Unknown source: {', '.join(unknown)}. Sources: {', '.join(SOURCES)}."
+    phrases = [p for p in PHRASE.findall(query) if re.search(r"\w", p)]
+    match = match_query(PHRASE.sub(" ", query))  # the words outside quotes, matched broadly
+    # Each phrase is required; FTS5's own phrase match (stemmed) narrows the candidates, the exact check comes below.
+    required = " AND ".join(f'"{" ".join(re.findall(r"\w+", p))}"' for p in phrases)
+    if required:
+        match = f"{required} AND ({match} OR {required})" if match else required
     if not match:
         return "Give a few words to search for."
+    exact = [plain_words(p) for p in phrases]
+    where, params = ["passages MATCH ?"], [match]
+    if speakers:
+        where.append(f"speaker IN ({','.join('?' * len(speakers))})")
+        params += speakers
+    if sources:
+        where.append(f"source IN ({','.join('?' * len(sources))})")
+        params += [SOURCE_NAMES[s.lower()] for s in sources]
+    # Stored dates are 2025-04 or 2025-08-22. Comparing at the shorter of the two lengths keeps both ends inclusive:
+    # 2025-10 is inside 2025-10-01..2025-10-31, and 2025-08-22 is inside ..2025. Undated talks never match a date filter.
+    for bound, op in ((from_date, ">="), (to_date, "<=")):
+        if bound:
+            where.append(f"date <> '' AND substr(date, 1, min(length(date), ?)) {op} substr(?, 1, min(length(date), ?))")
+            params += [len(bound), bound, len(bound)]
     rows = con.execute(
-        """SELECT rowid, name, title, source, date, url, anchor, text FROM passages
-           WHERE passages MATCH ? AND (? IS NULL OR speaker = ?)
+        f"""SELECT rowid, name, title, source, date, url, anchor, text FROM passages WHERE {' AND '.join(where)}
            ORDER BY bm25(passages, 1.0, 1.0) LIMIT ?""",  # heavier title weight let any paragraph of a matching talk win
-        (match, speaker, speaker, limit * 20),
-    ).fetchall()
+        # A quoted phrase reads candidates until enough pass the exact check (-1: no limit), since near
+        # matches by word stem can outnumber them; plain searches stop at a fixed pool.
+        (*params, -1 if exact else limit * 20),
+    )
     per_talk: dict[str, int] = {}
     shown: set[str] = set()  # the same paragraph can be saved twice (a joint talk, a reprint under a new title); show it once
     passages = []
     for row in rows:
         *_, url, _, text = row
         if per_talk.get(url, 0) >= MAX_PER_TALK or len(text.split()) < MIN_WORDS or text in shown:
+            continue
+        if exact and not all(f" {p} " in f" {plain_words(text)} " for p in exact):
             continue
         shown.add(text)
         per_talk[url] = per_talk.get(url, 0) + 1
@@ -262,9 +323,9 @@ def main():
         name = SPEAKERS[speaker]
         mcp = MCPServer(name, instructions=f"Searches the General Conference talks, devotionals, magazine articles and BYU speeches of {name}, {CALLINGS[speaker]}. {CITE} {scripture_note}")
 
-        @mcp.tool(description=f"Search {name}'s General Conference talks, devotionals, magazine articles and BYU speeches. Returns passages in the speaker's own words, each with title, date and source link. {CITE}")
-        def search(query: str, limit: int = 8) -> str:
-            return search_passages(con, query, speaker, max(1, min(limit, 20)))
+        @mcp.tool(description=f"Search {name}'s General Conference talks, devotionals, magazine articles and BYU speeches. Returns passages in the speaker's own words, each with title, date and source link. {FILTERS} {CITE}")
+        def search(query: str, limit: int = 8, from_date: str | None = None, to_date: str | None = None, sources: list[str] | None = None) -> str:
+            return search_passages(con, query, [speaker], max(1, min(limit, 20)), sources, from_date, to_date)
 
         @mcp.tool(description=f"List every talk and speech in {name}'s collection, newest first.")
         def list_talks() -> str:
@@ -277,9 +338,9 @@ def main():
     else:
         mcp = MCPServer("The Prophets", instructions=f"Searches talks by the First Presidency, the Quorum of the Twelve Apostles, apostles who died since 2021, and the Relief Society, Young Women and Primary general presidencies. {CITE} {scripture_note}")
 
-        @mcp.tool(description=f"Search talks by the First Presidency, the Twelve, apostles who died since 2021, and the Relief Society, Young Women and Primary general presidencies. Optionally limit to one speaker slug from list_speakers. {CITE}")
-        def search(query: str, speaker: str | None = None, limit: int = 8) -> str:
-            return search_passages(con, query, speaker, max(1, min(limit, 20)))
+        @mcp.tool(description=f"Search talks by the First Presidency, the Twelve, apostles who died since 2021, and the Relief Society, Young Women and Primary general presidencies. Optionally limit to speakers: a list of slugs from list_speakers. {FILTERS} {CITE}")
+        def search(query: str, speakers: list[str] | None = None, limit: int = 8, from_date: str | None = None, to_date: str | None = None, sources: list[str] | None = None) -> str:
+            return search_passages(con, query, speakers, max(1, min(limit, 20)), sources, from_date, to_date)
 
         @mcp.tool(description="List every speaker with their calling, the slug to pass to search, and how many talks and articles each has.")
         def list_speakers() -> str:

@@ -13,9 +13,12 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import zlib
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import NamedTuple
 
 DB = Path(os.environ.get("PROPHETS_DB") or Path(__file__).with_name("prophets.db"))  # hosts point this at a disk
 LOCK = DB.with_suffix(".updating")  # locked (not just present) while an update runs; see hold_lock
@@ -112,6 +115,17 @@ SOURCE_NOTE = re.compile(
 )
 
 
+# Short or plural names people type that differ from the chapter titles the verses are stored under.
+BOOK_ALIASES = {"d&c": "doctrine and covenants", "dc": "doctrine and covenants", "psalms": "psalm",
+                "od": "official declaration", "js h": "joseph smith history", "jsh": "joseph smith history",
+                "js m": "joseph smith matthew"}
+
+
+def book_key(name: str) -> str:
+    key = " ".join(re.sub(r"[^\w&]+", " ", name.lower()).split())  # "Joseph Smith—History" -> "joseph smith history"
+    return BOOK_ALIASES.get(key, key)
+
+
 def is_source_note(text: str) -> bool:
     words = len(text.split())
     return (words < 60 and bool(SOURCE_NOTE.match(text))) or (words < 30 and " • " in text)
@@ -175,44 +189,156 @@ def api(kind: str, uri: str) -> dict:
     return json.loads(get(f"{API}/{kind}?lang=eng&uri={uri}"))
 
 
+NOTE_ID = re.compile(r"note-?(\d+)(?:_p\d+)?")  # <li id="note3">, older <p id="note3_p1">, BYU's <p id="note-3">
+NOTE_REF = re.compile(r"#note-?(\d+)$")  # a footnote marker's link
+
+
+class Reading(NamedTuple):
+    """One reading of a talk page. ¶ numbers count paras from 1, as the passages table stores them."""
+    paras: list[tuple[str | None, str]]  # (paragraph id, text)
+    notes: list[tuple[int, int, str]] = []  # (¶, footnote number, text)
+    links: list[tuple[int, int | None, str]] = []  # (¶, footnote number or None for the paragraph itself, scripture link)
+    html: str = ""
+
+
 class _Paragraphs(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.found: list[tuple[str | None, str]] = []
-        self.current: tuple[str | None, list[str]] | None = None
+        self.found: list[tuple[str | None, str, list[int], list[str]]] = []  # (id, text, footnote numbers, scripture links)
+        self.current: tuple[str | None, list[str], list[int], list[str]] | None = None
         self.in_sup = 0
-        self.in_note = False
+        self.sup: list[str] = []  # the open <sup>'s text: a bare number there is a footnote marker (BYU's API text)
+        self.note: tuple[int | None, str, list[str], list[str]] | None = None  # (number, closing tag, text, scripture links)
+        self.notes: dict[int, tuple[str, list[str]]] = {}
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        if tag == "li" and (a.get("id") or "").startswith("note"):
-            self.in_note = True  # newer talks put footnote paragraphs, with random ids, inside <li id="note5">
-        elif tag == "p" and not self.in_note and not SKIP_P_CLASSES & set((a.get("class") or "").split()) and not (a.get("id") or "").startswith(SKIP_P_IDS):
-            self.current = (a.get("id"), [])
+        pid = a.get("id") or ""
+        if tag in ("li", "p") and pid.startswith("note") and not self.note:
+            # Newer talks put footnote paragraphs, with random ids, inside <li id="note5">. "note_title1" has no number.
+            number = NOTE_ID.fullmatch(pid)
+            self.note = (int(number[1]) if number else None, tag, [], [])
+        elif tag == "p" and not self.note and not SKIP_P_CLASSES & set((a.get("class") or "").split()) and not pid.startswith(SKIP_P_IDS):
+            self.current = (a.get("id"), [], [], [])
         elif tag == "sup":  # footnote markers
             self.in_sup += 1
+            self.sup = []
+        elif tag == "a":
+            href = a.get("href") or ""
+            marker = NOTE_REF.search(href)
+            if marker and self.current:
+                self.current[2].append(int(marker[1]))
+            elif "/scriptures/" in href and (self.note or self.current):
+                (self.note or self.current)[3].append(href)
 
     def handle_endtag(self, tag):
-        if tag == "li":
-            self.in_note = False
+        if self.note and tag == self.note[1]:
+            number, _, text, links = self.note
+            if number is not None:
+                self.notes[number] = (" ".join("".join(text).split()), links)
+            self.note = None
         elif tag == "sup" and self.in_sup:
             self.in_sup -= 1
+            if self.current and "".join(self.sup).strip().isdigit():
+                self.current[2].append(int("".join(self.sup)))
         elif tag == "p" and self.current:
             text = " ".join("".join(self.current[1]).split())
             if text and not is_source_note(text):
-                self.found.append((self.current[0], text))
+                self.found.append((self.current[0], text, self.current[2], self.current[3]))
             self.current = None
 
     def handle_data(self, data):
-        if self.current and not self.in_sup:
+        if self.note:
+            self.note[2].append(data)
+        elif self.in_sup:
+            self.sup.append(data)
+        elif self.current:
             self.current[1].append(data)
+
+
+def read_talk(body: str, notes: str = "") -> Reading:
+    """A talk's paragraphs (minus the byline, footnotes and captions), the footnotes their markers point to, and every
+    scripture link in them. notes is a notes panel kept apart from the text (BYU's public page)."""
+    parser = _Paragraphs()
+    parser.feed(body + notes)
+    owner: dict[int, int] = {}  # footnote number -> its marker's ¶; a marker in a caption or byline has none
+    for n, (_, _, markers, _) in enumerate(parser.found, 1):
+        for m in markers:
+            owner.setdefault(m, n)
+    mine = sorted((owner[m], m, text, links) for m, (text, links) in parser.notes.items() if m in owner)
+    return Reading(
+        [(pid, text) for pid, text, _, _ in parser.found],
+        [(n, m, re.sub(rf"^{m}\.\s*", "", text)) for n, m, text, _ in mine if text],  # BYU notes start "3. "
+        [(n, None, href) for n, (*_, links) in enumerate(parser.found, 1) for href in links]
+        + [(n, m, href) for n, m, _, links in mine for href in links],
+        body + notes,
+    )
 
 
 def paragraphs(body: str) -> list[tuple[str | None, str]]:
     """(paragraph id, text) for each <p> in a talk body, minus the byline, footnotes and captions."""
-    parser = _Paragraphs()
-    parser.feed(body)
-    return parser.found
+    return read_talk(body).paras
+
+
+SCRIPTURE_LINK = re.compile(r"/scriptures/(ot|nt|bofm|dc-testament|pgp)/([a-z0-9-]+)/(\d+)(?:\.([\d,\-–]+))?")
+
+
+def verse_numbers(spec: str) -> list[int]:
+    """Verse numbers in "p10-p13,p15", "10-13, 15" or "16, 28" (the p is sometimes missing after a comma)."""
+    return [v for a, b in re.findall(r"p?(\d+)(?:\s*[-–]\s*p?(\d+))?", spec) for v in range(int(a), min(int(b or a), int(a) + 200) + 1)]
+
+
+def cited(href: str) -> tuple[str, list[int]] | None:
+    """(chapter link as the verses table stores it, verse numbers or [] for a whole chapter) for a link into the
+    standard works, or None (Bible Dictionary, JST and other links). Church links put the verses in the id
+    ("?id=p10-p13%2Cp15"), not the #fragment, which is only the first; BYU links put them after a dot ("/dc/84.43-45")."""
+    href = urllib.parse.unquote(href)
+    m = SCRIPTURE_LINK.search(href)
+    if not m:
+        return None
+    spec = m[4] or next(iter(re.findall(r"[?&]id=([^&#]*)", href)), "")
+    if not re.fullmatch(r"[p\d,\-–\s]*", spec):
+        spec = ""  # an id that isn't verses: the chapter
+    return f"{CHURCH}/study/scriptures/{m[1]}/{m[2]}/{int(m[3])}?lang=eng", verse_numbers(spec)
+
+
+# A typed reference sits in parentheses or brackets: "(see D&C 76:69; 107:19)", "[Abraham 3:22–25]".
+WRITTEN_GROUP = re.compile(r"[(\[]([^()\[\]]*\d+:\d+[^()\[\]]*)[)\]]")
+WRITTEN_REF = re.compile(r"(?:(?:see|also|cf\.?)\s+)*(.*?)\s*(\d+):(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)", re.I)
+
+
+def written_citations(con, paras) -> list[tuple[int, str, int | None, None]]:
+    """(¶, chapter link, verse, None) for references typed into the text, for BYU speeches with no links. A part with no
+    book of its own ("107:19") takes the one before it in the same parentheses. Not every verse found exists."""
+    chapters = {(book_key(b), int(c)): u for b, c, u in con.execute("SELECT DISTINCT book, chapter, url FROM verses")}
+    names = {k for k, _ in chapters}
+    found = []
+    for n, (_, text) in enumerate(paras, 1):
+        for group in WRITTEN_GROUP.findall(text):
+            book = None
+            for part in re.split(r";|,(?=\s*\d+:)", group):  # "D&C 6:34, 78:17–18" is two references
+                ref = WRITTEN_REF.match(part.strip())
+                if not ref:
+                    continue
+                if ref[1]:  # a book name, or an abbreviation that starts exactly one ("Hel.", "2 Ne."); "JD" starts none
+                    key = book_key(ref[1])
+                    starts = [k for k in names if k.startswith(key)]
+                    book = key if key in names else starts[0] if len(starts) == 1 else None
+                if url := chapters.get((book, int(ref[2]))):
+                    found += [(n, url, v, None) for v in verse_numbers(ref[3])]
+    return found
+
+
+def citations(con, source: str, talk: Reading) -> list[tuple[int, str, int | None, int | None]]:
+    """(¶, chapter link, verse or None for a whole chapter, footnote number or None) for each verse a talk cites, once
+    each, checked against the verses table. BYU speeches with no links are read for typed references instead."""
+    found = [(n, hit[0], v, note) for n, note, href in talk.links if (hit := cited(href)) for v in hit[1] or [None]]
+    if not talk.links and source == "BYU Speeches":
+        found = written_citations(con, talk.paras)
+    chapters = list({c for _, c, _, _ in found})
+    real = set(con.execute(f"SELECT url, CAST(verse AS INTEGER) FROM verses WHERE url IN ({','.join('?' * len(chapters))})", chapters)) if chapters else set()
+    whole = {u for u, _ in real}
+    return list(dict.fromkeys(r for r in found if (r[1], r[2]) in real or (r[2] is None and r[1] in whole)))
 
 
 def text_of(fragment: str) -> str:
@@ -274,6 +400,14 @@ def connect(path=DB) -> sqlite3.Connection:
             ref, text, volume UNINDEXED, book UNINDEXED, chapter UNINDEXED, verse UNINDEXED, url UNINDEXED, anchor UNINDEXED,
             tokenize='porter unicode61 remove_diacritics 2')"""
     )
+    # Keyed by talk link and ¶ number (passages' own order), not row ids, so a joint talk's copies share them.
+    con.execute("CREATE TABLE IF NOT EXISTS footnotes (url TEXT, para INTEGER, note INTEGER, text TEXT)")
+    # One row per cited verse; a whole-chapter citation has no verse. note is the footnote number, or empty for the text.
+    con.execute("CREATE TABLE IF NOT EXISTS citations (url TEXT, para INTEGER, chapter TEXT, verse INTEGER, note INTEGER)")
+    con.execute("CREATE INDEX IF NOT EXISTS footnotes_url ON footnotes (url, para)")
+    con.execute("CREATE INDEX IF NOT EXISTS citations_url ON citations (url)")
+    # Each talk page as read, zlib-compressed, so a new reader can re-read pages without downloading them (docs/adr/0001).
+    con.execute("CREATE TABLE IF NOT EXISTS pages (url TEXT PRIMARY KEY, html BLOB)")
     return con
 
 
@@ -286,7 +420,31 @@ def conference(slug: str, done: set[str]):
         data = page(f"/general-conference/{path}")
         title = (data or {}).get("meta", {}).get("title", "")
         if data and title and not SKIP_TITLES.search(title):
-            yield "General Conference", title, path[:7].replace("/", "-"), url, paragraphs(data["content"]["body"])
+            yield "General Conference", title, path[:7].replace("/", "-"), url, read_talk(data["content"]["body"])
+
+
+def speech(url: str) -> dict | None:
+    """The BYU Speeches API record for a speech link, or None if it has none."""
+    slug = url.rstrip("/").rsplit("/", 1)[1]
+    hits = json.loads(get(f"{BYU}/wp-json/wp/v2/speech?slug={slug}&_fields=date,link,title,content"))
+    return next((h for h in hits if h["link"] == url), None)
+
+
+def byu_talk(url: str, text: str) -> Reading:
+    """A BYU speech read with its footnotes. The API text has only bare markers (<sup>2</sup>), so a speech that has
+    them costs one more request: the notes are in a hidden panel on the public page. A panel that's missing (a layout
+    change) is logged and skipped; a request error stops the run, to retry later."""
+    if "<sup" not in text:
+        return read_talk(text)  # before 2010, speeches have no footnotes
+    try:
+        panel = re.search(r'<div[^>]*id="?is-notes-body"?[^>]*>(.*?)</div>', get(url), re.S)
+    except urllib.error.HTTPError as e:
+        if e.code not in (404, 410):
+            raise
+        panel = None
+    if not panel:
+        print(f"  ! no footnotes panel on {url}; saved without footnotes", file=sys.stderr)
+    return read_talk(text, panel[1] if panel else "")
 
 
 def byu(slug: str, done: set[str]):
@@ -295,13 +453,12 @@ def byu(slug: str, done: set[str]):
         url = f"{BYU}/talks/{slug}/{talk}/"
         if url in done:
             continue
-        hits = json.loads(get(f"{BYU}/wp-json/wp/v2/speech?slug={talk}&_fields=date,link,title,content"))
-        hit = next((h for h in hits if h["link"] == url), None)
+        hit = speech(url)
         if not hit:
             print(f"  ! no API record for {url}", file=sys.stderr)
             continue
         title = html.unescape(html.unescape(hit["title"]["rendered"]))  # some titles are escaped twice ("D&amp;amp;C")
-        yield "BYU Speeches", title, hit["date"][:10], url, paragraphs(hit["content"]["rendered"])
+        yield "BYU Speeches", title, hit["date"][:10], url, byu_talk(url, hit["content"]["rendered"])
 
 
 def walk(uri: str, top: bool = True):
@@ -325,7 +482,7 @@ def walk(uri: str, top: bool = True):
 
 
 def record(uri: str, label: str, data: dict | None = None):
-    """(our speakers, name shown, source, title, date, url, paragraphs) for a page by one of ours, or None."""
+    """(our speakers, name shown, source, title, date, url, Reading) for a page by one of ours, or None."""
     data = data or page(uri)
     if not data:
         return None
@@ -335,14 +492,14 @@ def record(uri: str, label: str, data: dict | None = None):
     except (KeyError, TypeError, ValueError, AttributeError) as e:  # one odd page shouldn't stop the whole source
         print(f"  ! skipped an unreadable page: {uri} ({e!r})", file=sys.stderr)
         return None
-    paras = paragraphs(body)
-    if not who or sum(len(t.split()) for _, t in paras) < MIN_WORDS or SKIP_TITLES.search(title):
+    talk = read_talk(body)
+    if not who or sum(len(t.split()) for _, t in talk.paras) < MIN_WORDS or SKIP_TITLES.search(title):
         return None
     if re.search(r'class="title-number"[^>]*>[^<]*Session', body):
         return None  # an excerpt of a conference talk, which we already have in full
     when = re.search(r"/(\d{4})/(\d{2})", uri)
     date = "-".join(when.groups()) if when else ""
-    return *who, label, title, date, f"{CHURCH}/study{uri}?lang=eng", paras
+    return *who, label, title, date, f"{CHURCH}/study{uri}?lang=eng", talk
 
 
 def recent(uri: str) -> bool:
@@ -452,25 +609,35 @@ def reprint(con, slug, src, title, date) -> bool:
     return any(0 <= months(date) - months(d) <= 3 for (d,) in rows)
 
 
-def save(con, slug, src, title, date, url, paras, shown=None):
+def store(con, url, src, talk: Reading):
+    """Save a talk's footnotes, citations and page HTML, replacing any from an earlier reading."""
+    con.execute("DELETE FROM footnotes WHERE url = ?", (url,))
+    con.execute("DELETE FROM citations WHERE url = ?", (url,))
+    con.executemany("INSERT INTO footnotes VALUES (?,?,?,?)", [(url, *note) for note in talk.notes])
+    con.executemany("INSERT INTO citations VALUES (?,?,?,?,?)", [(url, *c) for c in citations(con, src, talk)])
+    con.execute("INSERT OR REPLACE INTO pages VALUES (?,?)", (url, zlib.compress(talk.html.encode())))
+
+
+def save(con, slug, src, title, date, url, talk: Reading, shown=None):
     """Store a talk under one of our speakers; shown names everyone on a joint talk."""
-    if not paras:
+    if not talk.paras:
         return  # audio- or video-only: nothing to search, and leaving it unsaved means a later transcript is picked up
     shown = shown or SPEAKERS[slug]
     con.executemany(
         "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",
-        [(title, text, slug, shown, src, date, url, anchor) for anchor, text in paras],
+        [(title, text, slug, shown, src, date, url, anchor) for anchor, text in talk.paras],
     )
+    store(con, url, src, talk)  # a joint talk's second speaker replaces the first's rows with the same ones
     con.execute("INSERT INTO added (url, speaker, name, source, date, title) VALUES (?,?,?,?,?,?)", (url, slug, shown, src, date, title))
-    print(f"  {date}  {shown}: {title}  ({len(paras)} paragraphs)")
+    print(f"  {date}  {shown}: {title}  ({len(talk.paras)} paragraphs)")
 
 
 def save_record(con, hit):
     """Save a record() result under each of our speakers on it, skipping magazine reprints of their conference talks."""
-    slugs, shown, src, title, date, url, paras = hit
+    slugs, shown, src, title, date, url, talk = hit
     for slug in slugs:
         if not reprint(con, slug, src, title, date):
-            save(con, slug, src, title, date, url, paras, shown)
+            save(con, slug, src, title, date, url, talk, shown)
 
 
 def main():
@@ -485,6 +652,21 @@ def main():
     print(f"Update started {started} UTC", flush=True)  # the log is appended to, so mark where each run begins
     done = {url for (url,) in con.execute("SELECT DISTINCT url FROM passages")}
     failed = False
+    full = not sys.argv[1:]
+    if full:  # first, because saving a talk checks its citations against the verses
+        print("Scriptures")
+        chapters = 0
+        try:
+            # Scripture text doesn't change, so a saved chapter is never fetched again.
+            for uri, rows in scriptures({uri for (uri,) in con.execute("SELECT uri FROM seen")}):
+                con.executemany("INSERT INTO verses VALUES (?,?,?,?,?,?,?,?)", rows or [])
+                con.execute("INSERT OR IGNORE INTO seen VALUES (?)", (uri,))
+                con.commit()
+                chapters += bool(rows)
+        except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
+            print(f"  ! scriptures stopped: {e}", file=sys.stderr)
+            failed = True
+        print(f"  {chapters} new chapters")
     for slug in slugs:
         print(SPEAKERS[slug])
         for source in (conference, byu):
@@ -505,7 +687,7 @@ def main():
         print("  total:", ", ".join(f"{n} {src}" for src, n in talks) or "nothing")
 
     # These sources are listed by event or issue, not by speaker, so they run only on a full run.
-    if not sys.argv[1:]:
+    if full:
         seen = {uri for (uri,) in con.execute("SELECT uri FROM seen")}
         saved = {url for (url,) in con.execute("SELECT DISTINCT url FROM passages")}  # fresh: includes this run's saves
         seen |= {url.split("/study", 1)[1].split("?")[0] for url in saved if "/study/" in url}
@@ -523,18 +705,6 @@ def main():
             except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
                 print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
                 failed = True
-        print("Scriptures")
-        chapters = 0
-        try:
-            for uri, rows in scriptures(seen):  # scripture text doesn't change, so a saved chapter is never fetched again
-                con.executemany("INSERT INTO verses VALUES (?,?,?,?,?,?,?,?)", rows or [])
-                con.execute("INSERT OR IGNORE INTO seen VALUES (?)", (uri,))
-                con.commit()
-                chapters += bool(rows)
-        except Exception as e:  # network or page-layout error; rerunning resumes where it stopped
-            print(f"  ! scriptures stopped: {e}", file=sys.stderr)
-            failed = True
-        print(f"  {chapters} new chapters")
         if not failed:
             CHECKED.touch()  # the weekly update waits another week; a cut-off or failed run never gets here, so it retries
     new = con.execute("SELECT COUNT(DISTINCT url) FROM added WHERE at >= ?", (started,)).fetchone()[0]

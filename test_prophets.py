@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import zlib
 
 os.environ["PROPHETS_DB"] = os.path.join(tempfile.mkdtemp(), "prophets.db")  # never touch the real index or lock
 
@@ -223,10 +224,10 @@ assert not reprint(con, "dallin-h-oaks", "Liahona", "Talk A", "2027-01")
 assert set(CALLINGS) == set(SPEAKERS), set(CALLINGS) ^ set(SPEAKERS)  # every speaker shows a calling
 
 # whats_new: a saved talk shows once (even when joint), an old addition drops out of the window, and the speaker filter holds.
-fetch.save(con, "camille-n-johnson", "Liahona", "New Light", "2026-11", "https://www.churchofjesuschrist.org/study/liahona/2026/11/new-light?lang=eng", [("p1", "x")], both)
-fetch.save(con, "j-anette-dennis", "Liahona", "New Light", "2026-11", "https://www.churchofjesuschrist.org/study/liahona/2026/11/new-light?lang=eng", [("p1", "x")], both)
-fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Old News", "2020-01-01", "https://o/n/", [(None, "x")])
-fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Video Only", "2026-11-01", "https://v/o/", [])  # no transcript: not saved
+fetch.save(con, "camille-n-johnson", "Liahona", "New Light", "2026-11", "https://www.churchofjesuschrist.org/study/liahona/2026/11/new-light?lang=eng", fetch.Reading([("p1", "x")]), both)
+fetch.save(con, "j-anette-dennis", "Liahona", "New Light", "2026-11", "https://www.churchofjesuschrist.org/study/liahona/2026/11/new-light?lang=eng", fetch.Reading([("p1", "x")]), both)
+fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Old News", "2020-01-01", "https://o/n/", fetch.Reading([(None, "x")]))
+fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Video Only", "2026-11-01", "https://v/o/", fetch.Reading([]))  # no transcript: not saved
 con.execute("UPDATE added SET at = datetime('now', '-60 days') WHERE title = 'Old News'")
 new = recent_additions(con, None, 30)
 assert new.count("New Light") == 1 and "Old News" not in new and "Video Only" not in new and "1 added" in new, new
@@ -284,6 +285,82 @@ assert lookup_verses(con, "Moroni 10:4-5", context=-1) == lookup_verses(con, "Mo
 assert "## Moroni 10:4\n" in search_verses(con, "sincere intent", None)
 assert "No verse matched" in search_verses(con, "sincere intent", "ot")  # volume filter, by short name
 assert "Psalm 23:1" in search_verses(con, "shepherd", "Old Testament")
+
+# Footnotes land on the ¶ whose marker points to them; one marked in a caption has no ¶ and is dropped. Scripture links
+# are kept with their ¶, and with the footnote number when they sit in a footnote.
+church = (
+    '<p class="author-name">By Elder X</p><p id="p1">Ask in faith.<a class="note-ref" href="#note1"><sup class="marker" data-value="1"></sup></a></p>'
+    '<p id="p2">Read <a class="scripture-ref" href="/study/scriptures/dc-testament/dc/76?lang=eng&amp;id=p58-p59#p58">D&amp;C 76:58–59</a> often.<a class="note-ref" href="#note2"><sup class="marker"></sup></a></p>'
+    '<p id="figure1_p1">A photo.<a class="note-ref" href="#note3"><sup class="marker"></sup></a></p>'
+    '<footer class="notes"><p class="title" id="note_title1">Notes</p><ol>'
+    '<li id="note1"><p id="p_yySqc">See <a class="scripture-ref" href="/study/scriptures/bofm/moro/10?lang=eng&amp;id=p4%2C5#p4">Moroni 10:4, 5</a>.</p></li>'
+    '<li id="note2"><p id="note2_p1">James E. Faust, “Salt Lake Tabernacle Rededication,” <cite>Liahona</cite>, May 2007, 39.</p></li>'
+    '<li id="note3"><p id="note3_p1">Photo by someone.</p></li></ol></footer>'
+)
+talk = fetch.read_talk(church)
+assert talk.paras == [("p1", "Ask in faith."), ("p2", "Read D&C 76:58–59 often.")], talk.paras
+assert talk.notes == [(1, 1, "See Moroni 10:4, 5."), (2, 2, "James E. Faust, “Salt Lake Tabernacle Rededication,” Liahona, May 2007, 39.")], talk.notes
+assert talk.links == [(2, None, "/study/scriptures/dc-testament/dc/76?lang=eng&id=p58-p59#p58"), (1, 1, "/study/scriptures/bofm/moro/10?lang=eng&id=p4%2C5#p4")], talk.links
+assert paragraphs(church) == talk.paras
+# BYU: the API text has bare numbered markers; the notes come from the public page's hidden panel, numbers and all.
+byu_text = "<p>Whosoever will lose his life for my sake shall find it”<sup>2</sup> and then explained.</p>"
+panel = '<p id=note-1>1. Aims.</p><p id=note-2 class=p1>2. <a href="https://www.churchofjesuschrist.org/study/scriptures/nt/matt/10.39?lang=eng">Matthew 10:39</a>; quoted in Marion G. Romney.</p>'
+real_get = fetch.get
+fetch.get = lambda url: f"<div class=individual-speech__notes-body id=is-notes-body hidden>{panel}</div><footer>x</footer>"
+spoken = fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text)
+assert spoken.paras == [(None, "Whosoever will lose his life for my sake shall find it” and then explained.")], spoken.paras
+assert spoken.notes == [(1, 2, "Matthew 10:39; quoted in Marion G. Romney.")], spoken.notes
+assert spoken.links == [(1, 2, "https://www.churchofjesuschrist.org/study/scriptures/nt/matt/10.39?lang=eng")], spoken.links
+fetch.get = lambda url: "<html>a new layout</html>"
+assert fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text).notes == []  # no panel: saved without footnotes
+def busy(url):
+    raise urllib.error.HTTPError(url, 503, "test", None, None)
+fetch.get = busy
+try:
+    fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text)
+    raise AssertionError("a server error must stop the run, to retry later")
+except urllib.error.HTTPError:
+    pass
+assert fetch.byu_talk("https://speeches.byu.edu/talks/x/old/", "<p>No markers here.</p>").paras  # no markers: no request
+fetch.get = real_get
+
+# Links: verses are in the id (Church) or after a dot (BYU); no verses is a whole chapter; other targets aren't verses.
+G = "https://www.churchofjesuschrist.org/study/scriptures"
+assert fetch.cited("/study/scriptures/pgp/abr/3?lang=eng&id=p26#p26") == (f"{G}/pgp/abr/3?lang=eng", [26])
+assert fetch.cited("/study/scriptures/nt/john/7?lang=eng&id=p16%2Cp28#p16")[1] == [16, 28]
+assert fetch.cited("/study/scriptures/dc-testament/dc/18?lang=eng&id=p10-p13%2Cp15#p10")[1] == [10, 11, 12, 13, 15]
+assert fetch.cited("/study/scriptures/ot/job/42?lang=eng&id=p10%2C12-p13#p10")[1] == [10, 12, 13]  # the p can be missing
+assert fetch.cited("/study/scriptures/nt/john/1?lang=eng") == (f"{G}/nt/john/1?lang=eng", [])
+assert fetch.cited("https://www.churchofjesuschrist.org/scriptures/dc-testament/dc/84.43-45")[1] == [43, 44, 45]
+assert fetch.cited("https://www.churchofjesuschrist.org/study/scriptures/dc-testament/dc/84.54,57?lang=eng") == (f"{G}/dc-testament/dc/84?lang=eng", [54, 57])
+assert fetch.cited("/study/scriptures/bd/baptism?lang=eng") is None and fetch.cited("/study/scriptures/jst/jst-matt/7?lang=eng&id=p1-p2") is None
+
+# Citations are checked against the verses: a verse or chapter that isn't there is dropped.
+cc = connect(":memory:")
+chapter_links = {}
+for book, vol, ch, verses in [("Moroni", "bofm/moro", 10, (3, 4, 5)), ("Doctrine and Covenants", "dc-testament/dc", 76, (58, 59)),
+                              ("Doctrine and Covenants", "dc-testament/dc", 107, (19,)), ("Doctrine and Covenants", "dc-testament/dc", 6, (34,)),
+                              ("Doctrine and Covenants", "dc-testament/dc", 78, (17, 18)), ("Isaiah", "ot/isa", 53, (5,)), ("Helaman", "bofm/hel", 5, (12,))]:
+    chapter_links[book, ch] = f"{G}/{vol}/{ch}?lang=eng"
+    cc.executemany("INSERT INTO verses VALUES (?,?,?,?,?,?,?,?)", [(f"{book} {ch}:{v}", "x", "", book, ch, v, chapter_links[book, ch], f"p{v}") for v in verses])
+moro, dc = chapter_links["Moroni", 10], lambda ch: chapter_links["Doctrine and Covenants", ch]
+assert fetch.citations(cc, "General Conference", talk) == [(2, dc(76), 58, None), (2, dc(76), 59, None), (1, moro, 4, 1), (1, moro, 5, 1)]
+odd = fetch.Reading([], links=[(1, None, "/study/scriptures/bofm/moro/10?lang=eng"), (1, None, "/study/scriptures/dc-testament/dc/77?lang=eng"),
+                              (1, None, "/study/scriptures/bofm/moro/10?lang=eng&id=p9#p9"), (1, None, "/study/scriptures/bofm/moro/10?lang=eng")])
+assert fetch.citations(cc, "Liahona", odd) == [(1, moro, None, None)]  # a whole chapter, once; D&C 77 and Moroni 10:9 aren't stored
+# BYU speeches with no links: references typed in parentheses or brackets, the book carried to a part without one.
+typed = fetch.Reading([(None, "We are told (see D&C 76:58; 107:19) and [D&C 6:34, 78:17–18]."),
+                       (None, "Behold (Isaiah 53:5, 24–25) and (Hel. 5:12), but not (JD 1:156; 2:3) or (HC 4:540).")])
+assert fetch.citations(cc, "BYU Speeches", typed) == [
+    (1, dc(76), 58, None), (1, dc(107), 19, None), (1, dc(6), 34, None), (1, dc(78), 17, None), (1, dc(78), 18, None),
+    (2, chapter_links["Isaiah", 53], 5, None), (2, chapter_links["Helaman", 5], 12, None)], fetch.citations(cc, "BYU Speeches", typed)
+assert fetch.citations(cc, "Ensign", typed) == []  # Church pages link their references
+# Saving keeps footnotes, citations and the compressed page; a joint talk's second speaker doesn't double them.
+for slug in ("dallin-h-oaks", "henry-b-eyring"):
+    fetch.save(cc, slug, "General Conference", "Ask", "2025-04", "https://x/ask?lang=eng", talk, "Dallin H. Oaks and Henry B. Eyring")
+assert cc.execute("SELECT url, para, note, text FROM footnotes").fetchall() == [("https://x/ask?lang=eng", *n) for n in talk.notes]
+assert cc.execute("SELECT para, chapter, verse, note FROM citations").fetchall() == fetch.citations(cc, "General Conference", talk)
+assert zlib.decompress(cc.execute("SELECT html FROM pages WHERE url = 'https://x/ask?lang=eng'").fetchone()[0]).decode() == church
 
 # An update starts when no full check has finished or the last is over a week old, and never while one is running.
 started = []

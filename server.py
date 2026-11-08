@@ -16,7 +16,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, MAGAZINES, SPEAKERS, VOLUMES, connect, hold_lock
+from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, MAGAZINES, SPEAKERS, VOLUMES, book_key, connect, hold_lock
 
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
 MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
@@ -38,9 +38,6 @@ UPDATE_EVERY = 7 * 24 * HOUR
 CITE = "Quote passages in the speaker's own words and cite each one with its Source link, title and date."
 QUOTE_VERSES = "Quote verses exactly as returned and cite each with its reference and Source link."
 NO_SCRIPTURES = "The scriptures haven't been downloaded yet. They arrive with the next full update (uv run fetch.py)."
-# Short or plural names people type that differ from the chapter titles the verses are stored under.
-BOOK_ALIASES = {"d&c": "doctrine and covenants", "dc": "doctrine and covenants", "psalms": "psalm",
-                "od": "official declaration", "js h": "joseph smith history", "js m": "joseph smith matthew"}
 
 
 def match_query(query: str) -> str:
@@ -219,11 +216,6 @@ def search_verses(con: sqlite3.Connection, query: str, volume: str | None, limit
     ).fetchall()
     out = [f"## {ref}\nSource: {verse_link(url, anchor)}\n\n{text}" for ref, text, url, anchor in rows]
     return "\n\n---\n\n".join(out) or f'No verse matched "{query}". Try other words.'
-
-
-def book_key(name: str) -> str:
-    key = " ".join(re.sub(r"[^\w&]+", " ", name.lower()).split())  # "Joseph Smith—History" -> "joseph smith history"
-    return BOOK_ALIASES.get(key, key)
 
 
 def lookup_verses(con: sqlite3.Connection, reference: str, context: int = 0) -> str:

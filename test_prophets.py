@@ -77,6 +77,11 @@ assert credits(page({"mainEntity": {"author": {"url": "/church/leader/camille-n-
 assert credits(page({}, "President Russell M. Nelson and Sister Wendy W. Nelson")) == (["russell-m-nelson"], "Russell M. Nelson and Wendy W. Nelson")
 twice = {"meta": {"structuredData": "{}"}, "content": {"body": '<p class="author-name">By Elder Neil L. Andersen</p><p class="author-name">By Elder Neil L. Andersen</p>'}}
 assert credits(twice) == (["neil-l-andersen"], "Neil L. Andersen")  # a repeated byline is still one speaker
+# Newer bylines: "By:" with a colon, the name in a "dominant" span, the calling after it; three names read "A, B and C".
+panel = {"meta": {"structuredData": "{}"}, "content": {"body": "".join(
+    f'<p class="author-name">{by}<span class="dominant">President {n},</span> {c} General President</p>'
+    for by, n, c in (("<i>By:</i> ", "Rosemary K. Chibota", "Primary"), ("", "Timothy L. Farnes", "Young Men"), ("", "Emily Belle Freeman", "Young Women")))}}
+assert credits(panel) == (["emily-belle-freeman", "rosemary-k-chibota"], "Rosemary K. Chibota, Timothy L. Farnes and Emily Belle Freeman"), credits(panel)
 
 # Footnote paragraphs inside <li id="noteN"> are skipped even with random paragraph ids.
 assert paragraphs('<p id="p_a">Our covenant relationship grants access to His power.</p><ol><li id="note5"><p id="p_ef19Q">See Joshua 3:5.</p></li></ol>') == [("p_a", "Our covenant relationship grants access to His power.")]

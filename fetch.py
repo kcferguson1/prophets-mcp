@@ -215,7 +215,7 @@ def text_of(fragment: str) -> str:
     return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())  # split() also folds non-breaking spaces
 
 
-HONORIFICS = re.compile(r"\b(?:By|With|President|Elder|Sister|Brother|Bishop)\s+|\s+of the [A-Z][\w ]*?(?= and |,|$)")  # titles, "of the Quorum…"
+HONORIFICS = re.compile(r"\b(?:By:?|With|President|Elder|Sister|Brother|Bishop)\s+|\s+of the [A-Z][\w ]*?(?= and |,|$)")  # titles, "of the Quorum…"
 
 
 def credits(data: dict) -> tuple[list[str], str] | None:
@@ -225,7 +225,11 @@ def credits(data: dict) -> tuple[list[str], str] | None:
     speaker and no quote should be pinned on one person. Bylines decide when there are any: the page data often names
     only the first speaker, and sometimes the wrong person.
     """
-    found = (text_of(b) for b in re.findall(r'class="author-name"[^>]*>(.*?)</p>', data["content"]["body"], re.S))
+    def name_of(byline):  # newer bylines put the name in a "dominant" span and the calling after it
+        lead = re.search(r'class="dominant"[^>]*>(.*?)</span>', byline, re.S)
+        return text_of(lead[1] if lead else byline).rstrip(",")
+
+    found = (name_of(b) for b in re.findall(r'class="author-name"[^>]*>(.*?)</p>', data["content"]["body"], re.S))
     bylines = list(dict.fromkeys(b for b in found if b))  # some pages repeat one byline
     try:
         who = json.loads(data["meta"]["structuredData"])["mainEntity"]["author"]
@@ -233,7 +237,8 @@ def credits(data: dict) -> tuple[list[str], str] | None:
         who = []
     people = [p for p in (who if isinstance(who, list) else [who]) if isinstance(p, dict)]
     if bylines:
-        shown = " and ".join(HONORIFICS.sub("", b).strip() for b in bylines)
+        names = [HONORIFICS.sub("", b).strip() for b in bylines]
+        shown = " and ".join(filter(None, [", ".join(names[:-1]), names[-1]]))  # "A, B and C"
         ours = [s for s, name in SPEAKERS.items() if name in shown]
     else:
         shown = " and ".join(p["name"] for p in people if p.get("name"))

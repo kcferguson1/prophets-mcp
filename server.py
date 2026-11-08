@@ -8,6 +8,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -23,7 +24,7 @@ FILLER = set(
     "where which who why will with would you your".split()
 )
 HOUR = 3600
-UPDATE_EVERY = 30 * 24 * HOUR
+UPDATE_EVERY = 7 * 24 * HOUR
 CITE = "Quote passages in the speaker's own words and cite each one with its Source link, title and date."
 
 
@@ -64,8 +65,36 @@ def list_sources(con: sqlite3.Connection, speaker: str | None) -> str:
     return "\n".join(f"- {name}, {date}, {source}: {title} ({url})" for name, date, source, title, url in rows)
 
 
+def recent_additions(con: sqlite3.Connection, speaker: str | None, days: int = 30) -> str:
+    lock = hold_lock()
+    if lock:
+        lock.close()
+    if lock is None:
+        status = "An update is running now."
+    elif CHECKED.exists():
+        status = f"Last full update finished {time.strftime('%Y-%m-%d', time.localtime(CHECKED.stat().st_mtime))}; updates run weekly."
+    else:
+        status = "No full update has finished yet."
+    rows = con.execute(
+        """SELECT DISTINCT date(at), name, date, source, title, url FROM added
+           WHERE at >= datetime('now', ?) AND (? IS NULL OR speaker = ?) ORDER BY 1 DESC, 3 DESC""",
+        (f"-{days} days", speaker, speaker),
+    ).fetchall()
+    if not rows:
+        return f"{status}\nNothing added in the last {days} days."
+    lines = [f"- added {added}: {name}, {date}, {source}: {title} ({url})" for added, name, date, source, title, url in rows]
+    return f"{status}\n{len(rows)} added in the last {days} days, newest first:\n" + "\n".join(lines)
+
+
+def keep_updated():
+    """Check at startup and then once a day, so a client left open for weeks still gets new talks."""
+    while True:
+        update_if_stale()
+        time.sleep(24 * HOUR)
+
+
 def update_if_stale():
-    """Fetch new talks in the background when there's no finished full check from the last month (or none at all)."""
+    """Fetch new talks in the background when there's no finished full check from the last week (or none at all)."""
     if CHECKED.exists() and time.time() - CHECKED.stat().st_mtime < UPDATE_EVERY:
         return
     lock = hold_lock()
@@ -90,7 +119,7 @@ def main():
     speaker = args.speaker
     if speaker and speaker not in SPEAKERS:
         sys.exit(f"Unknown speaker '{speaker}'. Choose from: {', '.join(SPEAKERS)}")
-    update_if_stale()
+    threading.Thread(target=keep_updated, daemon=True).start()  # daemon: never keeps the server alive after the client quits
     con = connect()  # creates an empty index on first run; the update fills it while the server answers
 
     if speaker:
@@ -104,6 +133,10 @@ def main():
         @mcp.tool(description=f"List every talk and speech in {name}'s collection, newest first.")
         def list_talks() -> str:
             return list_sources(con, speaker)
+
+        @mcp.tool(description=f"Show which of {name}'s talks and articles the weekly update added in the last `days` days, and when the last update ran.")
+        def whats_new(days: int = 30) -> str:
+            return recent_additions(con, speaker, max(1, min(days, 365)))
 
     else:
         mcp = MCPServer("The Prophets", instructions=f"Searches talks by the First Presidency, the Quorum of the Twelve Apostles, apostles who died since 2021, and the Relief Society, Young Women and Primary general presidencies. {CITE}")
@@ -123,6 +156,10 @@ def main():
         @mcp.tool(description="List every talk and speech for one speaker slug, newest first.")
         def list_talks(speaker: str) -> str:
             return list_sources(con, speaker) or f"No talks for '{speaker}'. Call list_speakers."
+
+        @mcp.tool(description="Show which talks and articles the weekly update added in the last `days` days, and when the last update ran. Optionally limit to one speaker slug.")
+        def whats_new(days: int = 30, speaker: str | None = None) -> str:
+            return recent_additions(con, speaker, max(1, min(days, 365)))
 
     if args.http:
         # Stateless: any request can land on a freshly restarted machine without losing a session.

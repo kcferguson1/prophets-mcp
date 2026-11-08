@@ -11,7 +11,7 @@ os.environ["PROPHETS_DB"] = os.path.join(tempfile.mkdtemp(), "prophets.db")  # n
 
 import fetch  # noqa: E402
 from fetch import CALLINGS, SPEAKERS, connect, credits, hold_lock, magazine_articles, page, paragraphs, recent, record, reprint, walk  # noqa: E402
-from server import search_passages  # noqa: E402
+from server import recent_additions, search_passages  # noqa: E402
 
 # The update lock: one holder at a time, and the operating system frees it when the holder exits, even on a crash.
 first = hold_lock()
@@ -135,4 +135,15 @@ assert reprint(con, "dallin-h-oaks", "Liahona", "Talk A", "2025-11")
 assert not reprint(con, "dallin-h-oaks", "Church broadcast", "Talk A", "2025-11")
 assert not reprint(con, "dallin-h-oaks", "Liahona", "Talk A", "2027-01")
 assert set(CALLINGS) == set(SPEAKERS), set(CALLINGS) ^ set(SPEAKERS)  # every speaker shows a calling
+
+# whats_new: a saved talk shows once (even when joint), an old addition drops out of the window, and the speaker filter holds.
+fetch.save(con, "camille-n-johnson", "Liahona", "New Light", "2026-11", "https://n/l?lang=eng", [("p1", "x")], both)
+fetch.save(con, "j-anette-dennis", "Liahona", "New Light", "2026-11", "https://n/l?lang=eng", [("p1", "x")], both)
+fetch.save(con, "dallin-h-oaks", "BYU Speeches", "Old News", "2020-01-01", "https://o/n/", [(None, "x")])
+con.execute("UPDATE added SET at = datetime('now', '-60 days') WHERE title = 'Old News'")
+new = recent_additions(con, None, 30)
+assert new.count("New Light") == 1 and "Old News" not in new and "1 added" in new, new
+assert "Old News" in recent_additions(con, "dallin-h-oaks", 90)
+assert "Nothing added" in recent_additions(con, "henry-b-eyring", 30)
+assert "No full update has finished yet." in new  # the test index has never finished a full run
 print("ok")

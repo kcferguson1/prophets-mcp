@@ -63,7 +63,9 @@ Then just ask: *"What has Sister Camille N. Johnson taught about finding relief 
 
 ### Staying up to date
 
-New talks arrive on their own. When a server starts and the last full check is more than 30 days old, it runs `fetch.py` in the background and keeps answering while it works. Only one update runs at a time, even with several servers open or while you run `fetch.py` yourself; a second one says so and exits. Progress goes to `prophets-update.log`.
+New talks arrive on their own, weekly. A running server checks when it starts and then once a day; when the last full check is more than 7 days old, it runs `fetch.py` in the background and keeps answering while it works. Only one update runs at a time, even with several servers open or while you run `fetch.py` yourself; a second one says so and exits. Progress goes to `prophets-update.log`, with a start line and a count of new talks for each run.
+
+To see what arrived, ask *"What's new in the prophets MCP?"* The `whats_new` tool lists each talk an update added, when it was added, and when the last update finished. It tracks additions from the first update after you install this version.
 
 To update right away, run `uv run fetch.py`. When the roster changes, run `git pull` to get the new speaker list.
 
@@ -73,9 +75,11 @@ To update right away, run `uv run fetch.py`. When the roster changes, run `git p
 |---|---|---|
 | One speaker (`--speaker <slug>`) | `search(query, limit)` | Searches that speaker's talks and returns passages in their own words, each with title, date and source link |
 | | `list_talks()` | Lists every talk and speech in that speaker's collection, newest first |
+| | `whats_new(days)` | Lists that speaker's talks added by updates in the last `days` days (default 30) |
 | Everyone (no `--speaker`) | `search(query, speaker?, limit)` | Searches all speakers, or one if you pass a slug |
 | | `list_speakers()` | Lists every speaker, their slug and how many talks they have |
 | | `list_talks(speaker)` | Lists one speaker's talks, newest first |
+| | `whats_new(days, speaker?)` | Lists talks added by updates in the last `days` days (default 30), and when the last update finished |
 
 ### What an answer looks like
 
@@ -130,7 +134,7 @@ The women who preside over the Relief Society, Young Women and Primary lead the 
 | Nina M. Garfield | `nina-m-garfield` | First Counselor, Primary General Presidency | 2026 | — | — | — | — |
 | Theresa A. Collins | `theresa-a-collins` | Second Counselor, Primary General Presidency | 2026 | — | — | — | — |
 
-Presidencies as listed on the Church's leadership pages in October 2026. The Primary presidency began serving in August 2026. Sister Garfield and Sister Collins haven't spoken in General Conference or published an article yet, so their talks will appear through the monthly update once they do.
+Presidencies as listed on the Church's leadership pages in October 2026. The Primary presidency began serving in August 2026. Sister Garfield and Sister Collins haven't spoken in General Conference or published an article yet, so their talks will appear through the weekly update once they do.
 
 ## How it works
 
@@ -149,7 +153,7 @@ official lists ──▶ talk text ──▶ paragraphs ──▶ search index �
 | 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk, with title, date, source and link |
 | 2. Check | `uv run test_prophets.py` | A self-check of the paragraph reader and the search |
 | 3. Serve | `uv run server.py [--speaker slug]` | An MCP server over stdio, ready for Claude, Cursor or Codex |
-| 4. Update | automatic, monthly | The server reruns step 1 in the background when the last full check is over 30 days old |
+| 4. Update | automatic, weekly | The server reruns step 1 in the background when the last full check is over 7 days old, checking at start and daily |
 
 - **Sources.** Everything comes from two official places. The Church's Gospel Library API on churchofjesuschrist.org supplies General Conference talks (found through each conference's table of contents and each speaker's page), broadcasts and devotionals, and articles from the Liahona (2021 on), For the Strength of Youth (2021 on), Ensign and New Era (1971–2020). BYU devotionals and forums come from the BYU Speeches data API.
 - **Who wrote it.** Each devotional and article is matched to a speaker by the author recorded in the Church's own page data, not by guessing from the byline. Devotionals and magazines are listed by event and issue, so `uv run fetch.py <slug>` for one speaker covers only conference and BYU; a full run covers everything.
@@ -159,7 +163,7 @@ official lists ──▶ talk text ──▶ paragraphs ──▶ search index �
 ### Files
 
 - [`fetch.py`](fetch.py) downloads the talks and builds the index. Rerunning it skips talks already saved.
-- [`server.py`](server.py) is the MCP server, and it starts the monthly update. It's built on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
+- [`server.py`](server.py) is the MCP server, and it starts the weekly update. It's built on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
 - [`test_prophets.py`](test_prophets.py) is the self-check.
 
 ## Content

@@ -254,6 +254,11 @@ def connect(path=DB) -> sqlite3.Connection:
     )
     # Gospel Library pages, events and issues already checked, whether or not they were by one of ours.
     con.execute("CREATE TABLE IF NOT EXISTS seen (uri TEXT PRIMARY KEY)")
+    # One row per talk saved by an update, so whats_new can show what arrived and when (UTC). Starts empty on an existing index.
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS added (
+            url TEXT, speaker TEXT, name TEXT, source TEXT, date TEXT, title TEXT, at TEXT DEFAULT CURRENT_TIMESTAMP)"""
+    )
     return con
 
 
@@ -416,6 +421,7 @@ def save(con, slug, src, title, date, url, paras, shown=None):
         "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",
         [(title, text, slug, shown, src, date, url, anchor) for anchor, text in paras],
     )
+    con.execute("INSERT INTO added (url, speaker, name, source, date, title) VALUES (?,?,?,?,?,?)", (url, slug, shown, src, date, title))
     print(f"  {date}  {shown}: {title}  ({len(paras)} paragraphs)")
 
 
@@ -435,6 +441,8 @@ def main():
     if lock is None:
         sys.exit("Another update is already running. Try again when it finishes.")
     con = connect()
+    started = con.execute("SELECT datetime('now')").fetchone()[0]
+    print(f"Update started {started} UTC", flush=True)  # the log is appended to, so mark where each run begins
     done = {url for (url,) in con.execute("SELECT DISTINCT url FROM passages")}
     failed = False
     for slug in slugs:
@@ -476,7 +484,9 @@ def main():
                 print(f"  ! {source.__name__} stopped: {e}", file=sys.stderr)
                 failed = True
         if not failed:
-            CHECKED.touch()  # the monthly update waits another month; a cut-off or failed run never gets here, so it retries
+            CHECKED.touch()  # the weekly update waits another week; a cut-off or failed run never gets here, so it retries
+    new = con.execute("SELECT COUNT(DISTINCT url) FROM added WHERE at >= ?", (started,)).fetchone()[0]
+    print(f"Update finished: {new} new talks and articles" + (" (stopped early; the next run picks up the rest)" if failed else ""))
 
 
 if __name__ == "__main__":

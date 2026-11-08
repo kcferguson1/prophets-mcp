@@ -56,6 +56,10 @@ _Avoid_: Citation (reserved for a talk pointing at a verse)
 A paragraph of a talk pointing at one or more verses through a link or a written reference, in its text or its footnote. Every verse in a cited range or list is cited; a verse quoted without a reference is not.
 _Avoid_: Quote, mention
 
+**Citation count**:
+The number of distinct talks that cite a verse; a talk citing it many times counts once.
+_Avoid_: Popularity, frequency, hits
+
 **Chapter citation**:
 A citation of a whole chapter with no verses named, such as John 1. It does not count as citing any single verse.
 _Avoid_: Citation (when meaning a whole chapter)

@@ -307,6 +307,9 @@ assert talk.paras == [("p1", "Ask in faith."), ("p2", "Read D&C 76:58–59 often
 assert talk.notes == [(1, 1, "See Moroni 10:4, 5."), (2, 2, "James E. Faust, “Salt Lake Tabernacle Rededication,” Liahona, May 2007, 39.")], talk.notes
 assert talk.links == [(2, None, "/study/scriptures/dc-testament/dc/76?lang=eng&id=p58-p59#p58"), (1, 1, "/study/scriptures/bofm/moro/10?lang=eng&id=p4%2C5#p4")], talk.links
 assert paragraphs(church) == talk.paras
+# Older pages put a footnote's paragraphs loose (note1_p1, note1_p2): one footnote, links from both.
+loose = fetch.read_talk('<p id="p1">Pray.<a href="#note1"><sup>1</sup></a></p><p id="note1_p1">See <a href="/study/scriptures/bofm/moro/10?lang=eng&amp;id=p4#p4">Moroni 10:4</a>.</p><p id="note1_p2">Also a comment.</p>')
+assert loose.notes == [(1, 1, "See Moroni 10:4. Also a comment.")] and loose.links == [(1, 1, "/study/scriptures/bofm/moro/10?lang=eng&id=p4#p4")], loose
 # BYU: the API text has bare numbered markers; the notes come from the public page's hidden panel, numbers and all.
 byu_text = "<p>Whosoever will lose his life for my sake shall find it”<sup>2</sup> and then explained.</p>"
 panel = '<p id=note-1>1. Aims.</p><p id=note-2 class=p1>2. <a href="https://www.churchofjesuschrist.org/study/scriptures/nt/matt/10.39?lang=eng">Matthew 10:39</a>; quoted in Marion G. Romney.</p>'
@@ -320,12 +323,10 @@ fetch.get = lambda url: "<html>a new layout</html>"
 assert fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text).notes == []  # no panel: saved without footnotes
 def busy(url):
     raise urllib.error.HTTPError(url, 503, "test", None, None)
-fetch.get = busy
-try:
-    fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text)
-    raise AssertionError("a server error must stop the run, to retry later")
-except urllib.error.HTTPError:
-    pass
+fetch.get = busy  # a failed request: the text is saved now, the footnotes on the next update
+unfinished = fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text)
+assert unfinished.paras == spoken.paras and unfinished.notes == [] and not unfinished.complete, unfinished
+assert fetch.byu_talk("https://speeches.byu.edu/talks/x/y/", byu_text.replace("<sup>2</sup>", "")).complete
 assert fetch.byu_talk("https://speeches.byu.edu/talks/x/old/", "<p>No markers here.</p>").paras  # no markers: no request
 fetch.get = real_get
 
@@ -363,8 +364,8 @@ assert fetch.citations(cc, "Ensign", typed) == []  # Church pages link their ref
 # Saving keeps footnotes, citations and the compressed page; a joint talk's second speaker doesn't double them.
 for slug in ("dallin-h-oaks", "henry-b-eyring"):
     fetch.save(cc, slug, "General Conference", "Ask", "2025-04", "https://x/ask?lang=eng", talk, "Dallin H. Oaks and Henry B. Eyring")
-assert cc.execute("SELECT url, para, note, text FROM footnotes").fetchall() == [("https://x/ask?lang=eng", *n) for n in talk.notes]
-assert cc.execute("SELECT para, chapter, verse, note FROM citations").fetchall() == fetch.citations(cc, "General Conference", talk)
+assert cc.execute("SELECT url, para, number, text FROM footnotes").fetchall() == [("https://x/ask?lang=eng", *n) for n in talk.notes]
+assert cc.execute("SELECT para, chapter, verse, footnote FROM citations").fetchall() == fetch.citations(cc, "General Conference", talk)
 assert zlib.decompress(cc.execute("SELECT html FROM pages WHERE url = 'https://x/ask?lang=eng'").fetchone()[0]).decode() == church
 
 # The one-time re-read: fresh paragraphs for every speaker on a talk, whats_new untouched, a removed page's text kept,
@@ -389,20 +390,33 @@ def site_get(url):
         return json.dumps([{"link": speech_url, "date": "2015-01-01", "title": {"rendered": "Y"}, "content": {"rendered": byu_text}}])
     return notes_page(url)
 fetch.api, fetch.get, notes_page = site_api, site_get, busy
-assert fetch.reread(up) is False  # the BYU notes request failed
+assert fetch.reread(up) is False  # the BYU notes request failed: its text is saved, the talk left for next time
 assert up.execute("PRAGMA user_version").fetchone()[0] == 0
 assert up.execute("SELECT speaker, text, anchor FROM passages WHERE url = ? ORDER BY rowid", (uchtdorf,)).fetchall() == [
     (s, t, a) for s in ("dallin-h-oaks", "henry-b-eyring") for a, t in talk.paras]
-assert up.execute("SELECT para, note FROM footnotes WHERE url = ?", (uchtdorf,)).fetchall() == [(1, 1), (2, 2)]
+assert up.execute("SELECT para, number FROM footnotes WHERE url = ?", (uchtdorf,)).fetchall() == [(1, 1), (2, 2)]
 assert up.execute("SELECT text FROM passages WHERE url = ?", (gone,)).fetchall() == [("Text we still have.",)]
-assert up.execute("SELECT text FROM passages WHERE url = ?", (speech_url,)).fetchall() == [("Old BYU text.",)]
+assert up.execute("SELECT text FROM passages WHERE url = ?", (speech_url,)).fetchall() == [(spoken.paras[0][1],)]
 assert up.execute("SELECT COUNT(*) FROM added").fetchone()[0] == 1  # re-saved talks aren't new
 assert "Citation data is still being built: 2 of 3 talks done." in recent_additions(up, None)
 notes_page = lambda url: f"<div id=is-notes-body hidden>{panel}</div>"
 assert fetch.reread(up) is True and up.execute("PRAGMA user_version").fetchone()[0] == fetch.VERSION
-assert up.execute("SELECT note, text FROM footnotes WHERE url = ?", (speech_url,)).fetchall() == [(2, "Matthew 10:39; quoted in Marion G. Romney.")]
+assert up.execute("SELECT number, text FROM footnotes WHERE url = ?", (speech_url,)).fetchall() == [(2, "Matthew 10:39; quoted in Marion G. Romney.")]
 assert "Citation data" not in recent_additions(up, None)
 fetch.api, fetch.get = real_api, real_get
+
+# A database upgraded before the footnote columns were renamed from "note" gets them renamed, rows and all.
+old_db = os.path.join(tempfile.mkdtemp(), "old.db")
+with closing(sqlite3.connect(old_db)) as db:
+    db.execute("CREATE TABLE footnotes (url TEXT, para INTEGER, note INTEGER, text TEXT)")
+    db.execute("CREATE TABLE citations (url TEXT, para INTEGER, chapter TEXT, verse INTEGER, note INTEGER)")
+    db.execute("INSERT INTO footnotes VALUES ('u', 1, 3, 'See Moroni 10:4.')")
+    db.commit()
+renamed = connect(old_db)
+assert renamed.execute("SELECT number, text FROM footnotes").fetchall() == [(3, "See Moroni 10:4.")]
+assert [c[1] for c in renamed.execute("PRAGMA table_info(citations)")] == ["url", "para", "chapter", "verse", "footnote"]
+renamed.close()
+assert [c[1] for c in connect(old_db).execute("PRAGMA table_info(footnotes)")] == ["url", "para", "number", "text"]  # once only
 
 # Citation counts in get_verses: asked-for verses only, zeros left out, a whole chapter's own count, a pointer to cites.
 intent = "https://www.churchofjesuschrist.org/study/general-conference/2023/10/intent?lang=eng"

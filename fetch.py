@@ -201,6 +201,7 @@ class Reading(NamedTuple):
     notes: list[tuple[int, int, str]] = []  # (¶, footnote number, text)
     links: list[tuple[int, int | None, str]] = []  # (¶, footnote number or None for the paragraph itself, scripture link)
     html: str = ""
+    complete: bool = True  # False when the footnotes couldn't be fetched: saved, but read again next update
 
 
 class _Paragraphs(HTMLParser):
@@ -236,8 +237,9 @@ class _Paragraphs(HTMLParser):
     def handle_endtag(self, tag):
         if self.note and tag == self.note[1]:
             number, _, text, links = self.note
-            if number is not None:
-                self.notes[number] = (" ".join("".join(text).split()), links)
+            if number is not None:  # a second loose paragraph (note1_p2) adds to the first
+                before, before_links = self.notes.get(number, ("", []))
+                self.notes[number] = (" ".join((before + " " + "".join(text)).split()), before_links + links)
             self.note = None
         elif tag == "sup" and self.in_sup:
             self.in_sup -= 1
@@ -403,9 +405,13 @@ def connect(path=DB) -> sqlite3.Connection:
             tokenize='porter unicode61 remove_diacritics 2')"""
     )
     # Keyed by talk link and ¶ number (passages' own order), not row ids, so a joint talk's copies share them.
-    con.execute("CREATE TABLE IF NOT EXISTS footnotes (url TEXT, para INTEGER, note INTEGER, text TEXT)")
-    # One row per cited verse; a whole-chapter citation has no verse. note is the footnote number, or empty for the text.
-    con.execute("CREATE TABLE IF NOT EXISTS citations (url TEXT, para INTEGER, chapter TEXT, verse INTEGER, note INTEGER)")
+    con.execute("CREATE TABLE IF NOT EXISTS footnotes (url TEXT, para INTEGER, number INTEGER, text TEXT)")
+    # One row per cited verse; a whole-chapter citation has no verse. footnote is its number, or empty for the text.
+    con.execute("CREATE TABLE IF NOT EXISTS citations (url TEXT, para INTEGER, chapter TEXT, verse INTEGER, footnote INTEGER)")
+    # Databases upgraded on 2026-11-08, before these columns were renamed to the glossary's words, still say "note".
+    for table, column in (("footnotes", "number"), ("citations", "footnote")):
+        if "note" in [c[1] for c in con.execute(f"PRAGMA table_info({table})")]:
+            con.execute(f"ALTER TABLE {table} RENAME COLUMN note TO {column}")
     con.execute("CREATE INDEX IF NOT EXISTS footnotes_url ON footnotes (url, para)")
     con.execute("CREATE INDEX IF NOT EXISTS citations_url ON citations (url)")
     # Each talk page as read, zlib-compressed, so a new reader can re-read pages without downloading them (docs/adr/0001).
@@ -437,15 +443,19 @@ def speech(url: str) -> dict | None:
 def byu_talk(url: str, text: str) -> Reading:
     """A BYU speech read with its footnotes. The API text has only bare markers (<sup>2</sup>), so a speech that has
     them costs one more request: the notes are in a hidden panel on the public page. A panel that's missing (a layout
-    change) is logged and skipped; a request error stops the run, to retry later."""
+    change) is logged and skipped for good; a failed request saves the text now and the footnotes next update."""
     if "<sup" not in text:
         return read_talk(text)  # before 2010, speeches have no footnotes
     try:
         panel = re.search(r'<div[^>]*id="?is-notes-body"?[^>]*>(.*?)</div>', get(url), re.S)
     except urllib.error.HTTPError as e:
         if e.code not in (404, 410):
-            raise
+            print(f"  ! couldn't get the footnotes of {url} ({e}); saved without them, retried next update", file=sys.stderr)
+            return read_talk(text)._replace(complete=False)
         panel = None
+    except OSError as e:  # a timeout or dropped connection
+        print(f"  ! couldn't get the footnotes of {url} ({e}); saved without them, retried next update", file=sys.stderr)
+        return read_talk(text)._replace(complete=False)
     if not panel:
         print(f"  ! no footnotes panel on {url}; saved without footnotes", file=sys.stderr)
     return read_talk(text, panel[1] if panel else "")
@@ -620,7 +630,7 @@ def store(con, url, src, talk: Reading):
     con.executemany("INSERT INTO footnotes VALUES (?,?,?,?)", [(url, *note) for note in talk.notes])
     con.executemany("INSERT INTO citations VALUES (?,?,?,?,?)", [(url, *c) for c in citations(con, src, talk)])
     con.execute("INSERT OR REPLACE INTO pages VALUES (?,?)", (url, zlib.compress(talk.html.encode())))
-    if con.execute("SELECT 1 FROM verses LIMIT 1").fetchone():  # with no verses to check against, re-read it later
+    if talk.complete and con.execute("SELECT 1 FROM verses LIMIT 1").fetchone():  # else re-read it next update
         con.execute("INSERT OR IGNORE INTO reread VALUES (?)", (url,))
 
 

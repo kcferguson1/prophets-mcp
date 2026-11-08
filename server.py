@@ -128,7 +128,7 @@ def paragraph_numbers(con: sqlite3.Connection, urls: set[str]) -> dict[int, int]
 def footnotes(con: sqlite3.Connection, urls: set[str]) -> dict[tuple[str, int], list[tuple[int, str]]]:
     """Each paragraph's footnotes as (number, text), keyed by (talk link, ¶ number)."""
     found: dict[tuple[str, int], list[tuple[int, str]]] = {}
-    rows = con.execute(f"SELECT url, para, note, text FROM footnotes WHERE url IN ({','.join('?' * len(urls))}) ORDER BY note", list(urls))
+    rows = con.execute(f"SELECT url, para, number, text FROM footnotes WHERE url IN ({','.join('?' * len(urls))}) ORDER BY number", list(urls))
     for url, para, note, text in rows:
         found.setdefault((url, para), []).append((note, text))
     return found
@@ -187,7 +187,7 @@ def citing(con: sqlite3.Connection, reference: str):
     shown = f"{book} {chapter}" + (f":{verses[0][0]}" + (f"-{verses[-1][0]}" if len(verses) > 1 else "") if named else "")
     where, params = ("chapter = ? AND verse BETWEEN ? AND ?", (verses[0][1], first, last)) if named else ("chapter = ?", (verses[0][1],))
     found: dict[tuple[str, int], list[tuple[int | None, int | None]]] = {}
-    for url, para, verse, note in con.execute(f"SELECT url, para, verse, note FROM citations WHERE {where}", params):
+    for url, para, verse, note in con.execute(f"SELECT url, para, verse, footnote FROM citations WHERE {where}", params):
         found.setdefault((url, para), []).append((verse, note))
     return book, chapter, shown, found
 

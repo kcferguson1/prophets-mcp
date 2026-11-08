@@ -73,27 +73,31 @@ To update right away, run `uv run fetch.py`. When the roster changes, run `git p
 
 | Server | Tool | What it does |
 |---|---|---|
-| One speaker (`--speaker <slug>`) | `search(query, limit)` | Searches that speaker's talks and returns passages in their own words, each with title, date and source link |
+| One speaker (`--speaker <slug>`) | `search(query, limit, from_date?, to_date?, sources?)` | Searches that speaker's talks and returns passages in their own words, each with its paragraph number, talk ID, title, date and source link |
 | | `list_talks()` | Lists every talk and speech in that speaker's collection, newest first |
 | | `whats_new(days)` | Lists that speaker's talks added by updates in the last `days` days (default 30) |
-| Everyone (no `--speaker`) | `search(query, speaker?, limit)` | Searches all speakers, or one if you pass a slug |
+| Everyone (no `--speaker`) | `search(query, speakers?, limit, from_date?, to_date?, sources?)` | Searches all speakers, or only the slugs you list |
 | | `list_speakers()` | Lists every speaker, their slug and how many talks they have |
 | | `list_talks(speaker)` | Lists one speaker's talks, newest first |
 | | `whats_new(days, speaker?)` | Lists talks added by updates in the last `days` days (default 30), and when the last update finished |
-| Both | `search_scriptures(query, volume?, limit)` | Searches the standard works, or one volume (`ot`, `nt`, `bofm`, `dc-testament`, `pgp`), and returns verses with a link to each |
+| Both | `get_talk(talk, start?, end?)` | Returns a talk's full text as numbered paragraphs, by talk ID or source link, about 5,000 words per call (a one-speaker server opens only that speaker's talks) |
+| | `search_scriptures(query, volume?, limit)` | Searches the standard works, or one volume (`ot`, `nt`, `bofm`, `dc-testament`, `pgp`), and returns verses with a link to each |
 | | `get_verses(reference)` | Returns the exact text of a reference like `Moroni 10:4-5`, `D&C 121:7` or `Alma 32` (a whole chapter) |
+
+**Search filters.** Put a phrase in double quotes to match those exact words in order: `"faith in Jesus Christ" repentance`. Capitals, punctuation, accents and straight or curly apostrophes don't matter. `from_date` and `to_date` are inclusive and take `2015`, `2015-04` or `2015-04-12`. `sources` takes any of General Conference, BYU Speeches, Church broadcast, Liahona, Ensign, New Era, For the Strength of Youth.
 
 ### What an answer looks like
 
 ```text
-## 1. Clark G. Gilbert, "Come Home"
+## 1. Clark G. Gilbert, "Come Home" ¶30
 General Conference, 2026-04
+Talk ID: general-conference/2026/04/15gilbert
 Source: https://www.churchofjesuschrist.org/study/general-conference/2026/04/15gilbert?lang=eng&id=p_vO6YV#p_vO6YV
 
 Come home! Come home! Ye who are weary, come home!
 ```
 
-Conference links jump straight to the quoted paragraph. BYU links open the speech.
+Conference links jump straight to the quoted paragraph. BYU links open the speech. ¶ numbers count the talk's own paragraphs (footnotes and captions aren't stored), so pass the talk ID to `get_talk` to read around a passage.
 
 ## Prophets and apostles
 

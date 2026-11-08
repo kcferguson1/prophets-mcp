@@ -2,21 +2,34 @@
 
 # The Prophets and Apostles MCP
 
-**Prophets, apostles and the women who lead The Church of Jesus Christ of Latter-day Saints (LDS), in an MCP server.**
+**The words of the prophets, apostles and general officers of The Church of Jesus Christ of Latter-day Saints (LDS), exactly as they spoke them, in an MCP server.**
 
-The First Presidency, the Quorum of the Twelve, and the Relief Society, Young Women and Primary general presidencies, each turned into a searchable MCP server built from their General Conference talks, devotionals, magazine articles and BYU speeches. The standard works come with it, verse by verse.<br>
-Add one to Claude, Cursor or Codex. Every answer cites its source.
+Every talk, devotional, magazine article and BYU speech by the First Presidency, the Quorum of the Twelve, and the Relief Society, Young Women and Primary general presidencies, plus every General Conference talk since April 2021, whoever gave it. The standard works come with it, verse by verse, along with every talk's footnotes and the scriptures it cites.<br>
+Add it to Claude, Cursor or Codex. Every answer quotes its source exactly and links to it.
 
-[Use it](#use-it-in-a-few-minutes) · [Prophets and apostles](#prophets-and-apostles) · [Women leaders](#women-leaders) · [Scriptures](#scriptures) · [How it works](#how-it-works) · [Content](#content)
+[Highlights](#highlights) · [Use it](#use-it-in-a-few-minutes) · [How it works](#how-it-works) · [FAQ](#faq) · [Speakers](#prophets-and-apostles) · [Scriptures](#scriptures) · [Content](#content)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-1f6feb.svg)](LICENSE)
-[![Speakers](https://img.shields.io/badge/speakers-27-202020.svg)](#women-leaders)
-[![Talks](https://img.shields.io/badge/talks%20%26%20articles-1%2C968-202020.svg)](#prophets-and-apostles)
+[![Speakers](https://img.shields.io/badge/speakers-27%20%2B%20162-202020.svg)](#prophets-and-apostles)
+[![Talks](https://img.shields.io/badge/talks%20%26%20articles-2%2C169-202020.svg)](#prophets-and-apostles)
+[![Self-check](https://github.com/kcferguson1/prophets-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/kcferguson1/prophets-mcp/actions/workflows/test.yml)
 [![MCP](https://img.shields.io/badge/MCP-stdio-4a4a4a.svg)](https://modelcontextprotocol.io)
 
 </div>
 
 ---
+
+## Highlights
+
+- **Exact words, never rewritten.** Every result is a paragraph exactly as it was spoken or published, with the speaker, title, date and a link that jumps straight to that paragraph on the Church's website.
+- **Search that understands you.** Search by topic ("repentance" also finds "repenting"), by exact phrase in quotes, and narrow by speaker, date range or source (General Conference, BYU Speeches, Church broadcasts, Liahona, Ensign, New Era, For the Strength of Youth).
+- **Whole talks, numbered.** `get_talk` returns a talk paragraph by paragraph (¶1, ¶2…), so you can read around any quote.
+- **Whole conferences.** `list_talks` lists a General Conference's talks in the order they were given. Every speaker's talk is there from April 2021 on.
+- **Footnotes.** Each passage shows its footnotes, so you can see when a speaker is quoting someone else, and who.
+- **Scriptures and citations.** Look up any verse, see how many talks cite it, and find the very paragraphs that do (`cites="Moroni 10:4"`).
+- **Living voices first.** Leaders who have died are marked, as in "Russell M. Nelson (died 2025)", so current teaching can come first.
+- **Always current.** New talks arrive on their own every week, and a self-check runs on every change.
+- **On your computer.** The talks are downloaded to your own machine. Nothing is hosted, and the repo holds only code.
 
 ## Use it in a few minutes
 
@@ -57,7 +70,12 @@ In **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_conf
 }
 ```
 
-Then just ask: *"What has Sister Camille N. Johnson taught about finding relief in Jesus Christ?"*, *"What has President Nelson taught about the gathering of Israel?"* or *"How does Sister Emily Belle Freeman describe a covenant relationship with Christ?"* Scripture works the same way: *"What does Moroni 10:4-5 say?"* or *"Which Book of Mormon verses talk about charity?"*
+Then just ask:
+
+- *"What has Sister Camille N. Johnson taught about finding relief in Jesus Christ?"*
+- *"What were the main themes of the October 2026 general conference?"*
+- *"What does Moroni 10:4-5 say, and which talks cite it?"*
+- *"Which Book of Mormon verses talk about charity?"*
 
 **ChatGPT** only connects to MCP servers at a public HTTPS address. `uv run server.py --http` serves the same tools over streamable HTTP at `/mcp` on `$PORT`, but there's no public server yet.
 
@@ -65,32 +83,35 @@ Then just ask: *"What has Sister Camille N. Johnson taught about finding relief 
 
 New talks arrive on their own, weekly. A running server checks when it starts and then once a day; when the last full check is more than 7 days old, it runs `fetch.py` in the background and keeps answering while it works. Only one update runs at a time, even with several servers open or while you run `fetch.py` yourself; a second one says so and exits. Progress goes to `prophets-update.log`, with a start line and a count of new talks for each run.
 
-To see what arrived, ask *"What's new in the prophets MCP?"* The `whats_new` tool lists each talk an update added, when it was added, and when the last update finished. It tracks additions from the first update after you install this version.
+To see what arrived, ask *"What's new in the prophets MCP?"* The `whats_new` tool lists each talk an update added, when it was added, and when the last update finished.
 
 To update right away, run `uv run fetch.py`. When the roster changes, run `git pull` to get the new speaker list.
 
 ### Upgrading
 
-After a `git pull` that adds footnotes and scripture citations, the server downloads every saved talk once more in the background, about 2,300 requests and 20–40 minutes, to keep each talk's footnotes, the verses it cites and its page. Search, `get_talk` and the lists keep working the whole time. Progress goes to `prophets-update.log`, and `whats_new` shows "Citation data is still being built: N of M talks done" until it finishes. If it's stopped, the next update goes on where it left off. A few older talks' ¶ numbers may shift by one or two after this re-read; talk IDs never change.
+After a `git pull`, the next update catches up on its own:
+
+- **Footnotes and citations.** The first time, the server downloads every saved talk once more in the background (about 2,300 requests, 20–40 minutes) to keep each talk's footnotes, the verses it cites and its page. Search, `get_talk` and the lists keep working the whole time; `whats_new` shows "Citation data is still being built: N of M talks done" until it finishes, and if it's stopped, the next update goes on where it left off. A few older talks' ¶ numbers may shift by one or two; talk IDs never change.
+- **Every speaker since April 2021.** The next full update reads each General Conference from April 2021 on once more and adds the talks by speakers off the roster (about 200 talks, a few minutes).
 
 ### Tools
 
 | Server | Tool | What it does |
 |---|---|---|
-| One speaker (`--speaker <slug>`) | `search(query, limit, from_date?, to_date?, sources?, cites?)` | Searches that speaker's talks and returns passages in their own words, each with its paragraph number, talk ID, title, date and source link |
+| One speaker (`--speaker <slug>`) | `search(query, limit, from_date?, to_date?, sources?, cites?)` | Searches that speaker's talks and returns passages in their own words, each with its paragraph number, talk ID, title, date, source link and footnotes |
 | | `list_talks(from_date?, to_date?, sources?)` | Lists that speaker's talks and speeches, newest first, each with its talk ID |
 | | `whats_new(days)` | Lists that speaker's talks added by updates in the last `days` days (default 30) |
-| Everyone (no `--speaker`) | `search(query, speakers?, limit, from_date?, to_date?, sources?, cites?)` | Searches all speakers, or only the slugs you list |
-| | `list_speakers()` | Lists every speaker, their slug and how many talks they have |
+| Everyone (no `--speaker`) | `search(query, speakers?, limit, from_date?, to_date?, sources?, cites?)` | Searches every speaker, or only the slugs you list |
+| | `list_speakers()` | Lists the roster with callings and talk counts, then every other General Conference speaker since April 2021, each with the slug to search by |
 | | `list_talks(speaker?, from_date?, to_date?, sources?)` | Lists one speaker's talks, or everyone's in a date range: `from_date` and `to_date` `2026-10` with `sources` General Conference lists that conference's talks in the order given. At most 250 at a time |
 | | `whats_new(days, speaker?)` | Lists talks added by updates in the last `days` days (default 30), and when the last update finished |
-| Both | `get_talk(talk, start?, end?)` | Returns a talk's full text as numbered paragraphs, by talk ID or source link, about 5,000 words per call (a one-speaker server opens only that speaker's talks) |
+| Both | `get_talk(talk, start?, end?)` | Returns a talk's full text as numbered paragraphs, each with its footnotes, by talk ID or source link, about 5,000 words per call (a one-speaker server opens only that speaker's talks) |
 | | `search_scriptures(query, volume?, limit)` | Searches the standard works, or one volume (`ot`, `nt`, `bofm`, `dc-testament`, `pgp`), and returns verses with a link to each |
 | | `get_verses(reference, context?)` | Returns the exact text of a reference like `Moroni 10:4-5`, `D&C 121:7` or `Alma 32` (a whole chapter); `context` (0–10) adds verses before and after, within the chapter. After the verses, how many talks cite each one |
 
 **Search filters.** Put a phrase in double quotes to match those exact words in order: `"faith in Jesus Christ" repentance`. Capitals, punctuation, accents and straight or curly apostrophes don't matter. `from_date` and `to_date` are inclusive and take `2015`, `2015-04` or `2015-04-12`. `sources` takes any of General Conference, BYU Speeches, Church broadcast, Liahona, Ensign, New Era, For the Strength of Youth. `cites` takes one scripture reference (`Moroni 10:4`, `Moroni 10:3-5`, or `Alma 32` for the whole chapter) and keeps only paragraphs that cite it, each with a `Cites:` line saying where (`Moroni 10:4 (footnote 3)`); with no `query`, the newest come first.
 
-**Footnotes and citations.** Each passage lists its footnotes (cut at 60 words); `get_talk` shows them in full under each paragraph. A citation is a paragraph pointing at a verse, in its text or its footnote. Counts come from scripture links and references in talks and their footnotes; a verse quoted without a reference isn't counted. A whole-chapter citation (such as John 1) doesn't count toward any one verse.
+**Footnotes and citations.** Each passage lists its footnotes (cut at 60 words); `get_talk` shows them in full under each paragraph. A citation is a paragraph pointing at a verse, in its text or its footnote. Counts come from scripture links and references in talks and their footnotes; a verse quoted without a reference isn't counted. A whole-chapter citation (such as John 1) doesn't count toward any one verse. Counts cover every talk collected: the roster's talks from every source, and everyone's General Conference talks since April 2021.
 
 ### What an answer looks like
 
@@ -104,6 +125,120 @@ Come home! Come home! Ye who are weary, come home!
 ```
 
 Conference links jump straight to the quoted paragraph. A leader who has died is marked wherever a name shows, as in "Russell M. Nelson (died 2025)". BYU links open the speech. ¶ numbers count the talk's own paragraphs (footnotes and captions aren't paragraphs), so pass the talk ID to `get_talk` to read around a passage.
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph web["🌐&nbsp;Official&nbsp;websites"]
+        GL["⛪ <b>Church website</b><br/>conference talks · devotionals<br/>magazines · scriptures"]
+        BYU["🎓 <b>BYU Speeches</b><br/>devotionals · forums"]
+    end
+
+    subgraph mac["💻&nbsp;Your&nbsp;computer"]
+        F["📥 <b>fetch.py</b><br/>the downloader<br/>checks every week"]
+        DB[("🗄️ <b>prophets.db</b><br/>talks · footnotes<br/>verses · citations")]
+        S["🔌 <b>server.py</b><br/>the MCP server<br/>search · get_talk · get_verses"]
+    end
+
+    subgraph app["🤖&nbsp;Your&nbsp;AI&nbsp;app"]
+        C["🙋 <b>You ask</b><br/>Claude · Cursor · Codex"]
+        A("💬 <b>Your answer</b><br/>exact quotes + links")
+    end
+
+    GL -- "talk pages" --> F
+    BYU -- "speech pages" --> F
+    F -- "saves the<br/>exact words" --> DB
+    DB -- "finds the right<br/>paragraphs" --> S
+    S <-- "asks a tool ·<br/>gets real passages" --> C
+    C --> A
+
+    classDef site fill:#eef4fb,stroke:#5b7fa6,stroke-width:1.5px,color:#1b2b3a
+    classDef code fill:#f3eefb,stroke:#7a5ea8,stroke-width:1.5px,color:#2a1f3d
+    classDef data fill:#fbf3e6,stroke:#b07d2b,stroke-width:1.5px,color:#3a2a10
+    classDef person fill:#eaf6ee,stroke:#4f8a5f,stroke-width:1.5px,color:#17301f
+    class GL,BYU site
+    class F,S code
+    class DB data
+    class C,A person
+    style web fill:transparent,stroke:#5b7fa6,stroke-dasharray:4 3
+    style mac fill:transparent,stroke:#7a5ea8,stroke-dasharray:4 3
+    style app fill:transparent,stroke:#4f8a5f,stroke-dasharray:4 3
+```
+
+**In four steps:**
+
+1. **Download.** `fetch.py` visits the Church's website and BYU Speeches, reads each talk page, and keeps the exact words, paragraph by paragraph, along with the footnotes and every scripture each paragraph points to. It does this once, then checks for new talks every week.
+2. **Store.** Everything goes into one file on your computer, `prophets.db`. It's a SQLite database, which is a whole searchable library packed into a single file.
+3. **Serve.** `server.py` is the MCP server. It offers your AI app a set of tools (search, read a talk, look up a verse) that answer from that file.
+4. **Answer.** When you ask a question, your AI app calls those tools, gets back the real paragraphs with their links, and quotes them to you. The AI never has to remember a quote, so it can't misquote one.
+
+| Step | Command | Output |
+|---|---|---|
+| 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk with its footnotes and citations, its title, date, source and link, and every verse of the standard works |
+| 2. Check | `uv run test_prophets.py` | A self-check of the page reader, search, citations and updates, and a re-read of every saved page; it also runs on GitHub after every push |
+| 3. Serve | `uv run server.py [--speaker slug]` | An MCP server over stdio, ready for Claude, Cursor or Codex |
+| 4. Update | automatic, weekly | The server reruns step 1 in the background when the last full check is over 7 days old, checking at start and daily |
+
+- **Sources.** Everything comes from two official places. The Church's Gospel Library API on churchofjesuschrist.org supplies General Conference talks (found through each conference's table of contents and each speaker's page), broadcasts and devotionals, and articles from the Liahona (2021 on), For the Strength of Youth (2021 on), Ensign and New Era (1971–2020), plus the Church's edition of the standard works. BYU devotionals and forums come from the BYU Speeches data API, with footnotes from each speech's page.
+- **Who spoke.** Each talk is matched to its speakers by the byline and the speaker recorded in the Church's own page data. Roster leaders are collected from every source; from April 2021 on, every General Conference speaker is collected too, under the speaker link the Church gives them. Devotionals and magazines are listed by event and issue, so `uv run fetch.py <slug>` for one speaker covers only conference and BYU; a full run covers everything.
+- **Search.** SQLite's built-in full-text search (FTS5) ranks paragraphs with BM25, a standard way to score how well text matches a question. Porter stemming means "repenting" also finds "repentance". A matching talk title helps a passage rank, footnotes aren't searched, and at most two passages come from any one talk, so one long talk can't fill every result.
+- **Footnotes and citations.** Church pages link each scripture to its exact verses; BYU speeches before 2010 type their references in parentheses, so those are read from the text and checked against the verses. Each talk's page is kept, compressed, so a future reader can re-read it without downloading it again ([ADR 0001](docs/adr/0001-keep-page-html-and-reread-talks.md)).
+- **Skipped on purpose.** The sustaining of Church officers, solemn assemblies, auditing reports and statistical reports are left out; they're procedure, not teaching. Magazine reprints and excerpts of conference talks are left out too, since the full talk is already there.
+
+### Files
+
+- [`fetch.py`](fetch.py) downloads the talks and scriptures and builds the database. Rerunning it skips talks and chapters already saved.
+- [`server.py`](server.py) is the MCP server, and it starts the weekly update. It's built on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
+- [`test_prophets.py`](test_prophets.py) is the self-check.
+- [`GLOSSARY.md`](GLOSSARY.md) defines the project's words (talk, passage, footnote, citation, roster…), and [`CODING_STANDARDS.md`](CODING_STANDARDS.md) holds the rules every change is reviewed against.
+
+## FAQ
+
+**What is this, in one sentence?**
+It's a way to let an AI app like Claude look up exactly what Church leaders said, word for word, instead of guessing from memory.
+
+**What's an MCP server?**
+MCP (Model Context Protocol) is a standard way for an AI app to use outside tools. Think of it like adding an app to a phone: once it's connected, Claude can "open" this library and look things up whenever your question needs it.
+
+**Why not just ask Claude without it?**
+Claude learned from a huge amount of text, but it doesn't remember talks word for word, and it can mix up who said what. With this server, Claude reads the actual paragraph and gives you the link, so you can check every quote yourself.
+
+**Whose talks are in it?**
+Every talk, devotional, magazine article and BYU speech by the First Presidency, the Quorum of the Twelve Apostles, apostles who died since October 2021, and the Relief Society, Young Women and Primary general presidencies. That group is called the roster. On top of that, every General Conference talk since April 2021 is included, whoever gave it, so Seventies and other speakers are there too for recent conferences.
+
+**Why aren't older talks by Seventies included?**
+The project started with the prophets and apostles, and older conferences are kept to that group. From April 2021 on, whole conferences are included so you can ask about a conference's themes. The starting point is one setting in the code, so it can move earlier later.
+
+**Can it change or make up a quote?**
+The server can't. It only hands back text exactly as it appears on the Church's website, with a link. The AI app writes the answer around those quotes, so if something it says sounds off, click the link and read the original.
+
+**What's a footnote, and why does it matter?**
+A footnote is the small numbered note at the bottom of a talk. It says where a scripture or a quote came from. If a footnote says a sentence came from another leader or a book, you know the speaker was quoting someone, and you can give the right person credit.
+
+**What's a citation count?**
+It's how many different talks point to a verse, through a scripture link or a written reference. Ask about Moroni 10:4 and you'll see how many talks cite it, and you can pull up those exact paragraphs.
+
+**What does "(died 2025)" next to a name mean?**
+That leader has passed away. It's there so an answer can lead with what living leaders are teaching now, and use earlier teachings to support it.
+
+**How does it stay up to date?**
+While your AI app is open, the server checks once a day. If a week has passed since the last full update, it quietly downloads anything new in the background. You can keep asking questions while it works.
+
+**Can I use it on my phone?**
+Not directly. The server runs on your computer, and phone apps can only connect to servers on the internet. On your phone, your AI app falls back to searching the web.
+
+**Does it send my questions anywhere?**
+The server itself only talks to the Church and BYU websites, to download talks. Your questions go to your AI app the same way they always do; the server just answers the app's lookups on your own computer.
+
+**Is this an official Church project?**
+No. It's an unofficial tool. The talks belong to the Church and BYU, and their terms allow personal, noncommercial use, which is why everything stays on your own computer.
+
+**How much space and time does it take?**
+The first download takes about an hour and makes a file of about 150 MB. After that, weekly updates take a few minutes.
+
+**Something looks wrong. What do I do?**
+Run `uv run test_prophets.py`. It checks the whole setup, including re-reading every saved page. The file `prophets-update.log` shows what each update did, and lines starting with `!` are pages it couldn't read.
 
 ## Prophets and apostles
 
@@ -148,9 +283,13 @@ The women who preside over the Relief Society, Young Women and Primary lead the 
 
 Presidencies as listed on the Church's leadership pages in October 2026. The Primary presidency began serving in August 2026. Sister Garfield and Sister Collins haven't spoken in General Conference or published an article yet, so their talks will appear through the weekly update once they do.
 
+## Every General Conference speaker since April 2021
+
+From the April 2021 conference on, every talk is collected, not just the roster's: General Authority Seventies, the Presiding Bishopric, the Young Men and Sunday School general presidencies, and anyone else who spoke. That adds 162 speakers and 195 talks. `list_speakers` lists them after the roster, each with the slug to search by, and `list_talks` with a conference's month lists its talks in order. Their talks outside General Conference, and their conference talks before April 2021, aren't collected.
+
 ## Scriptures
 
-The standard works, verse by verse, from the Church's Gospel Library edition. Look one up by reference with `get_verses`, or search by topic with `search_scriptures`. Every verse links straight to its place in Gospel Library.
+The standard works, verse by verse, from the Church's Gospel Library edition. Look one up by reference with `get_verses`, or search by topic with `search_scriptures`. Every verse links straight to its place in Gospel Library, and `get_verses` shows how many talks cite each verse.
 
 | Volume | Slug | Chapters | Verses |
 |---|---|---|---|
@@ -161,36 +300,6 @@ The standard works, verse by verse, from the Church's Gospel Library edition. Lo
 | Pearl of Great Price | `pgp` | 16 | 635 |
 
 Only the verses are kept: chapter headings, section introductions and signature lines are left out. Scripture text doesn't change, so it downloads once (about 15 minutes, 18 MB) and later updates skip it.
-
-## How it works
-
-Each server is a small, cited search index over one speaker's own words. Nothing is summarized or rewritten, so every passage is a direct quote.
-
-```
-official lists ──▶ talk text ──▶ paragraphs ──▶ search index ──▶ MCP server
- (conference,      (content       (each with     (SQLite FTS5,    (search, list_talks,
-  broadcast and     APIs)          its own link)  BM25 ranking)    list_speakers)
-  magazine contents,
-  BYU speaker pages)
-```
-
-| Step | Command | Output |
-|---|---|---|
-| 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk, with title, date, source and link, and every verse of the standard works |
-| 2. Check | `uv run test_prophets.py` | A self-check of the paragraph reader and the search |
-| 3. Serve | `uv run server.py [--speaker slug]` | An MCP server over stdio, ready for Claude, Cursor or Codex |
-| 4. Update | automatic, weekly | The server reruns step 1 in the background when the last full check is over 7 days old, checking at start and daily |
-
-- **Sources.** Everything comes from two official places. The Church's Gospel Library API on churchofjesuschrist.org supplies General Conference talks (found through each conference's table of contents and each speaker's page), broadcasts and devotionals, and articles from the Liahona (2021 on), For the Strength of Youth (2021 on), Ensign and New Era (1971–2020), plus the Church's edition of the standard works. BYU devotionals and forums come from the BYU Speeches data API.
-- **Who wrote it.** Each devotional and article is matched to a speaker by the author recorded in the Church's own page data, not by guessing from the byline. Devotionals and magazines are listed by event and issue, so `uv run fetch.py <slug>` for one speaker covers only conference and BYU; a full run covers everything.
-- **Search.** SQLite's built-in full-text search (FTS5) ranks paragraphs with BM25, a standard way to score how well text matches a question. Porter stemming means "repenting" also finds "repentance". A matching talk title helps a passage rank, footnotes are left out, and at most two passages come from any one talk, so one long talk can't fill every result.
-- **Skipped on purpose.** The sustaining of Church officers, solemn assemblies, auditing reports and statistical reports are left out; they're procedure, not teaching. Magazine reprints and excerpts of conference talks are left out too, since the full talk is already there.
-
-### Files
-
-- [`fetch.py`](fetch.py) downloads the talks and scriptures and builds the index. Rerunning it skips talks and chapters already saved.
-- [`server.py`](server.py) is the MCP server, and it starts the weekly update. It's built on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
-- [`test_prophets.py`](test_prophets.py) is the self-check.
 
 ## Content
 

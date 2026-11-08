@@ -12,6 +12,7 @@ import re
 import sqlite3
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -105,6 +106,8 @@ BROADCASTS_ROOT = "/videos-and-images/broadcasts-and-devotionals"
 # Magazine columns whose table-of-contents byline is a label, not a name, though our speakers write them.
 HIDDEN_AUTHOR_LABELS = ("Covenant Women", "Answers from an Apostle", "First Presidency Message")
 MIN_WORDS = 100  # shorter pages are video-only stubs, posters or quote cards
+# General Conferences from this one on are saved whole, every speaker's talk; earlier ones keep only the roster's.
+EVERYONE_FROM = "2021-04"
 # The database's PRAGMA user_version once every saved talk has footnotes and citations; older ones are re-read once.
 VERSION = 2
 
@@ -361,8 +364,15 @@ def text_of(fragment: str) -> str:
 HONORIFICS = re.compile(r"\b(?:By:?|With|President|Elder|Sister|Brother|Bishop)\s+|\s+of the [A-Z][\w ]*?(?= and |,|$)")  # titles, "of the Quorum…"
 
 
-def credits(data: dict) -> tuple[list[str], str] | None:
-    """(our speakers on a Gospel Library page, the name to show for it), or None if none of ours spoke.
+def slug_of(name: str) -> str:
+    """A speaker slug from a name, as the Church's leader links spell them: "José A. Teixeira" -> jose-a-teixeira."""
+    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", plain.lower()).strip("-")
+
+
+def credits(data: dict, everyone: bool = False) -> tuple[list[str], str] | None:
+    """(our speakers on a Gospel Library page, the name to show for it), or None if none of ours spoke. everyone also
+    credits a speaker off the roster, under the slug from their leader link (or their name).
 
     A joint talk or panel shows everyone ("Russell M. Nelson and Wendy W. Nelson"), because its text isn't marked by
     speaker and no quote should be pinned on one person. Bylines decide when there are any: the page data often names
@@ -386,10 +396,13 @@ def credits(data: dict) -> tuple[list[str], str] | None:
     else:
         shown = " and ".join(p["name"] for p in people if p.get("name"))
         ours = [s for s in (str(p.get("url", "")).rsplit("/", 1)[-1] for p in people) if s in SPEAKERS]
+    if not ours and everyone:
+        links = {p.get("name"): str(p.get("url", "")).rsplit("/", 1)[-1] for p in people}
+        ours = [links.get(n) or slug_of(n) for n in names] if bylines else [s for s in links.values() if s]
     if not ours:
         return None
     joint = len(bylines) > 1 or len(people) > 1 or re.search(r",|\band\b|&", shown)
-    return ours, shown if joint else SPEAKERS[ours[0]]
+    return ours, shown if joint else SPEAKERS.get(ours[0], shown)
 
 
 def connect(path=DB) -> sqlite3.Connection:
@@ -504,14 +517,14 @@ def walk(uri: str, top: bool = True):
                 yield entry["uri"]
 
 
-def record(uri: str, label: str, data: dict | None = None):
+def record(uri: str, label: str, data: dict | None = None, everyone: bool = False):
     """(our speakers, name shown, source, title, date, url, Reading) for a page by one of ours, or None."""
     data = data or page(uri)
     if not data:
         return None
     try:
         body, title = data["content"]["body"], data["meta"]["title"]
-        who = credits(data)
+        who = credits(data, everyone)
     except (KeyError, TypeError, ValueError, AttributeError) as e:  # one odd page shouldn't stop the whole source
         print(f"  ! skipped an unreadable page: {uri} ({e!r})", file=sys.stderr)
         return None
@@ -534,20 +547,22 @@ def recent(uri: str) -> bool:
 
 def conference_tocs(seen: set[str]):
     """Every General Conference table of contents, the official list of who spoke; catches talks a speaker page misses.
-    Yields (uri to mark seen, record or None)."""
+    From EVERYONE_FROM on, every speaker's talk is saved. Yields (uri to mark seen, record or None)."""
     for year in range(1971, int(time.strftime("%Y")) + 1):
         for month in ("04", "10"):
             toc = f"/general-conference/{year}/{month}"
-            if toc in seen:
+            everyone = f"{year}-{month}" >= EVERYONE_FROM
+            key = f"{toc}?everyone" if everyone else toc  # its own key, so tables read for the roster alone get read again
+            if key in seen:
                 continue
             data = page(toc)
             if not data:
                 continue  # a conference not held yet
             for uri, inner in re.findall(r'<a href="/study(/general-conference/\d{4}/\d{2}/[^"?#]+)[^>]*>(.*?)</a>', data["content"]["body"], re.S):
                 byline = text_of(" ".join(re.findall(r'class="primaryMeta"[^>]*>(.*?)</p>', inner, re.S)))
-                if uri not in seen and any(name in byline for name in SPEAKERS.values()):
-                    yield uri, record(uri, "General Conference")
-            yield toc, None
+                if uri not in seen and (everyone or any(name in byline for name in SPEAKERS.values())):
+                    yield uri, record(uri, "General Conference", everyone=everyone)
+            yield key, None
 
 
 def broadcasts(seen: set[str]):

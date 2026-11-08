@@ -86,6 +86,11 @@ panel = {"meta": {"structuredData": "{}"}, "content": {"body": "".join(
     f'<p class="author-name">{by}<span class="dominant">President {n},</span> {c} General President</p>'
     for by, n, c in (("<i>By:</i> ", "Rosemary K. Chibota", "Primary"), ("", "Timothy L. Farnes", "Young Men"), ("", "Emily Belle Freeman", "Young Women")))}}
 assert credits(panel) == (["emily-belle-freeman", "rosemary-k-chibota"], "Rosemary K. Chibota, Timothy L. Farnes and Emily Belle Freeman"), credits(panel)
+# Off the roster, everyone credits the speaker under their leader link's slug, or one made from their name.
+hathaway = {"meta": {"title": "Steady", "structuredData": json.dumps({"mainEntity": {"author": {"name": "Kevin J. Hathaway", "url": "/church/leader/kevin-j-hathaway"}}})},
+            "content": {"body": '<p class="author-name">By Elder Kevin\xa0J. Hathaway</p><p class="author-role">Of the Seventy</p><p id="p1">' + "Steady faith grows. " * 40 + "</p>"}}
+assert credits(hathaway) is None and credits(hathaway, everyone=True) == (["kevin-j-hathaway"], "Kevin J. Hathaway"), credits(hathaway, everyone=True)
+assert credits(page({}, "By Elder José A. Teixeira"), everyone=True) == (["jose-a-teixeira"], "José A. Teixeira")
 
 # Footnote paragraphs inside <li id="noteN"> are skipped even with random paragraph ids.
 assert paragraphs('<p id="p_a">Our covenant relationship grants access to His power.</p><ol><li id="note5"><p id="p_ef19Q">See Joshua 3:5.</p></li></ol>') == [("p_a", "Our covenant relationship grants access to His power.")]
@@ -219,6 +224,21 @@ assert paragraphs('<p>From a devotional address, “A Holier Approach to Ministe
                   '<p>From the First Vision, we learn that because of the grace of our Savior we too can be forgiven.</p>') == [
     (None, "From the First Vision, we learn that because of the grace of our Savior we too can be forgiven.")]
 
+# From EVERYONE_FROM on, a conference's table of contents is read for every speaker, once more under its own key even when
+# it was read for the roster alone; before then, a speaker off the roster is still skipped.
+tocs = {
+    "/general-conference/2026/10": {"content": {"body": '<a href="/study/general-conference/2026/10/16hathaway"><p class="primaryMeta">Kevin J. Hathaway</p></a>'
+                                                        '<a href="/study/general-conference/2026/10/12oaks"><p class="primaryMeta">Dallin H. Oaks</p></a>'}},
+    "/general-conference/2026/10/16hathaway": hathaway,
+    "/general-conference/2020/10": {"content": {"body": '<a href="/study/general-conference/2020/10/15someone"><p class="primaryMeta">Some One</p></a>'}},
+}
+real_page = fetch.page
+fetch.page = tocs.get
+found = list(fetch.conference_tocs({"/general-conference/2026/10", "/general-conference/2026/10/12oaks"}))
+fetch.page = real_page
+assert [uri for uri, _ in found] == ["/general-conference/2020/10", "/general-conference/2026/10/16hathaway", "/general-conference/2026/10?everyone"], found
+assert found[1][1][:5] == (["kevin-j-hathaway"], "Kevin J. Hathaway", "General Conference", "Steady", "2026-10"), found[1][1][:5]
+
 # A magazine's reprint of a conference talk is skipped; a broadcast with the same title, or a much later article, is not.
 assert reprint(con, "dallin-h-oaks", "Liahona", "Talk A", "2025-11")
 assert not reprint(con, "dallin-h-oaks", "Church broadcast", "Talk A", "2025-11")
@@ -248,6 +268,13 @@ assert list_sources(con, "nobody", None).startswith("Unknown speaker: nobody. Sp
 server.MAX_LISTED = 2
 assert list_sources(con, None, None, "2026-10", "2026-10").endswith("\nShowing the newest 2 of 3 talks. Narrow with from_date/to_date or sources to see the rest.")
 server.MAX_LISTED = 250
+# A General Conference speaker off the roster: found by slug, named by their own talks, listed after the roster.
+con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Steady", "Steady faith grows when we keep our covenants through every season of life.", "kevin-j-hathaway", "Kevin J. Hathaway", "General Conference", "2026-10", f"{conf}16hathaway?lang=eng", "p1"))
+assert "Steady faith grows" in search_passages(con, "steady faith covenants", ["kevin-j-hathaway"])
+assert list_sources(con, "kevin-j-hathaway").startswith("- Kevin J. Hathaway, 2026-10, General Conference: Steady")
+roster_and_others = server.speaker_list(con)
+assert roster_and_others.startswith("Leaders whose talks are all collected:\n- Dallin H. Oaks, President of the Church (slug: dallin-h-oaks): "), roster_and_others[:200]
+assert roster_and_others.endswith("\n\nOther General Conference speakers since April 2021 (their conference talks only):\n- Kevin J. Hathaway (slug: kevin-j-hathaway): 1 talk"), roster_and_others[-300:]
 # Leaders who have died are marked wherever a name shows, so living voices can come first; a joint talk marks only them.
 nelson = "https://www.churchofjesuschrist.org/study/general-conference/2024/10/57nelson?lang=eng"
 con.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", ("Joy", "Joy is a gift for the faithful who strive to live righteously and follow the Savior.", "russell-m-nelson", "Russell M. Nelson and Wendy W. Nelson", "General Conference", "2024-10", nelson, "p1"))
@@ -482,6 +509,9 @@ assert search_passages(up, "", None, cites="Moroni 10:4", limit=1).startswith(
 assert "Narrow with from_date/to_date or sources to see" in search_passages(up, "", ["dallin-h-oaks"], cites="Moroni 10:4", limit=1)
 assert search_passages(up, "", None, cites="Moroni 10:4", from_date="2024") == "2 talks cite Moroni 10:4, but none match the other filters."
 assert search_passages(up, "", ["gerrit-w-gong"], cites="Moroni 10:4") == "No talks by Gerrit W. Gong cite Moroni 10:4."
+up.execute("INSERT INTO passages VALUES ('Steady', 'x', 'kevin-j-hathaway', 'Kevin J. Hathaway', 'General Conference', '2026-10', 'https://h/s', 'p1')")
+assert search_passages(up, "", ["kevin-j-hathaway"], cites="Moroni 10:4") == "No talks by Kevin J. Hathaway cite Moroni 10:4."
+up.execute("DELETE FROM passages WHERE speaker = 'kevin-j-hathaway'")
 assert search_passages(up, "", None, cites="Moroni 10:3") == "No talks cite Moroni 10:3."
 assert search_passages(up, "", None, cites="Hezekiah 1:1") == 'No book called "Hezekiah" in the standard works.'
 assert search_passages(up, "", None, cites="Moroni 10:9") == "Moroni 10 has no verse 9."

@@ -14,6 +14,10 @@ _Avoid_: Article, speech, document (except when naming that specific kind)
 A Church leader a talk is credited to, whether it was spoken or written.
 _Avoid_: Author, leader
 
+**Roster**:
+The leaders whose every talk is collected, from every source: the First Presidency, the Quorum of the Twelve Apostles, apostles who died since October 2021, and the Relief Society, Young Women and Primary general presidencies. Other speakers are collected only for General Conferences from April 2021 on.
+_Avoid_: Speaker list, core speakers
+
 **Joint talk**:
 A talk credited to more than one speaker, shown with everyone's names and never pinned on one of them.
 _Avoid_: Co-authored talk, panel

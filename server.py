@@ -17,7 +17,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, MAGAZINES, SPEAKERS, VERSION, VOLUMES, book_key, connect, hold_lock
+from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, EVERYONE_FROM, MAGAZINES, SPEAKERS, VERSION, VOLUMES, book_key, connect, hold_lock
 
 MAX_LISTED = 250  # per list_talks call, so a broad list can't flood the context; no speaker has this many yet
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
@@ -48,6 +48,7 @@ QUOTE_VERSES = "Quote verses exactly as returned and cite each with its referenc
 NO_SCRIPTURES = "The scriptures haven't been downloaded yet. They arrive with the next full update (uv run fetch.py)."
 
 
+EVERYONE_SINCE = datetime.strptime(EVERYONE_FROM, "%Y-%m").strftime("%B %Y")  # "April 2021"
 DIED = {SPEAKERS[s]: m[1] for s, c in CALLINGS.items() if (m := re.search(r"\(died (\d{4})\)", c))}  # name -> year
 
 
@@ -238,8 +239,16 @@ def plain_words(text: str) -> str:
     return " ".join(re.findall(r"\w+", text.lower().replace("’", "").replace("'", "")))
 
 
+def speaker_name(con: sqlite3.Connection, slug: str) -> str:
+    """A speaker's name: the roster's, or, for a General Conference speaker off it, the name on their own talks."""
+    if slug in SPEAKERS:
+        return SPEAKERS[slug]
+    names = [n for (n,) in con.execute("SELECT DISTINCT name FROM passages WHERE speaker = ?", (slug,))]
+    return min(names, key=len) if names else slug  # the shortest is a solo talk's, not a joint one's
+
+
 def talk_filters(
-    speakers: list[str] | None, sources: list[str] | None, from_date: str | None, to_date: str | None
+    con: sqlite3.Connection, speakers: list[str] | None, sources: list[str] | None, from_date: str | None, to_date: str | None
 ) -> tuple[list[str], list] | str:
     """WHERE clauses and their parameters for the speaker, source and date filters, or a message saying what's wrong."""
     for d in (from_date, to_date):
@@ -247,8 +256,8 @@ def talk_filters(
             return f'Dates look like 2015, 2015-04 or 2015-04-12, not "{d}".'
     if from_date and to_date and from_date[:len(to_date)] > to_date[:len(from_date)]:
         return f"from_date {from_date} is after to_date {to_date}."
-    if unknown := [s for s in speakers or [] if s not in SPEAKERS]:
-        return f"Unknown speaker: {', '.join(unknown)}. Speakers: {', '.join(SPEAKERS)}."
+    if unknown := [s for s in speakers or [] if s not in SPEAKERS and not con.execute("SELECT 1 FROM passages WHERE speaker = ? LIMIT 1", (s,)).fetchone()]:
+        return f"Unknown speaker: {', '.join(unknown)}. Speakers: {', '.join(SPEAKERS)}, or another speaker's slug from list_speakers."
     if unknown := [s for s in sources or [] if s.lower() not in SOURCE_NAMES]:
         return f"Unknown source: {', '.join(unknown)}. Sources: {', '.join(SOURCES)}."
     where, params = [], []
@@ -271,7 +280,7 @@ def search_passages(
     con: sqlite3.Connection, query: str, speakers: list[str] | None, limit: int = 8, sources: list[str] | None = None,
     from_date: str | None = None, to_date: str | None = None, cites: str | None = None,
 ) -> str:
-    filters = talk_filters(speakers, sources, from_date, to_date)
+    filters = talk_filters(con, speakers, sources, from_date, to_date)
     if isinstance(filters, str):
         return filters
     phrases = [p for p in PHRASE.findall(query) if re.search(r"\w", p)]
@@ -290,7 +299,7 @@ def search_passages(
     if match:
         where.append("passages MATCH ?")
         params.append(match)
-    by = f" by {SPEAKERS[speakers[0]]}" if speakers and len(speakers) == 1 else " by those speakers" if speakers else ""
+    by = f" by {speaker_name(con, speakers[0])}" if speakers and len(speakers) == 1 else " by those speakers" if speakers else ""
     if cite:
         book, chapter, shown_ref, found = cite
         progress = [f"{p}, so some citing talks may be missing." for p in [citation_progress(con)] if p]
@@ -440,7 +449,7 @@ def list_sources(
     con: sqlite3.Connection, speaker: str | None, sources: list[str] | None = None, from_date: str | None = None, to_date: str | None = None
 ) -> str:
     """Talks newest first; a conference's talks in the order given."""
-    filters = talk_filters([speaker] if speaker else None, sources, from_date, to_date)
+    filters = talk_filters(con, [speaker] if speaker else None, sources, from_date, to_date)
     if isinstance(filters, str):
         return filters
     where, params = filters
@@ -451,6 +460,22 @@ def list_sources(
     if len(rows) > MAX_LISTED:
         lines.append(f"Showing the newest {MAX_LISTED} of {len(rows)} talks. Narrow with from_date/to_date or sources to see the rest.")
     return "\n".join(lines) or "No talks match those filters."
+
+
+def speaker_list(con: sqlite3.Connection) -> str:
+    """The roster with callings and counts, then everyone else who spoke in General Conference since EVERYONE_FROM."""
+    counts = dict(con.execute("SELECT speaker, COUNT(DISTINCT url) FROM passages GROUP BY speaker"))
+    roster = [
+        f"- {name}, {CALLINGS[slug]} (slug: {slug}): " + (f"{counts[slug]} talks and articles" if counts.get(slug) else "no talks yet")
+        for slug, name in SPEAKERS.items()
+    ]
+    others = sorted((speaker_name(con, slug), slug, n) for slug, n in counts.items() if slug not in SPEAKERS)
+    if not others:
+        return "\n".join(roster)
+    return "\n".join(
+        ["Leaders whose talks are all collected:", *roster, "", f"Other General Conference speakers since {EVERYONE_SINCE} (their conference talks only):"]
+        + [f"- {name} (slug: {slug}): {n} talk{'' if n == 1 else 's'}" for name, slug, n in others]
+    )
 
 
 def recent_additions(con: sqlite3.Connection, speaker: str | None, days: int = 30) -> str:
@@ -534,19 +559,17 @@ def main():
             return recent_additions(con, speaker, max(1, min(days, 365)))
 
     else:
-        mcp = MCPServer("The Prophets", instructions=f"Searches talks by the First Presidency, the Quorum of the Twelve Apostles, apostles who died since 2021, and the Relief Society, Young Women and Primary general presidencies. {CITE} {scripture_note}")
+        coverage = (f"talks by the First Presidency, the Quorum of the Twelve Apostles, apostles who died since 2021, and the Relief Society, "
+                    f"Young Women and Primary general presidencies, plus every General Conference talk since {EVERYONE_SINCE}")
+        mcp = MCPServer("The Prophets", instructions=f"Searches {coverage}. {CITE} {scripture_note}")
 
-        @mcp.tool(description=f"Search talks by the First Presidency, the Twelve, apostles who died since 2021, and the Relief Society, Young Women and Primary general presidencies. Optionally limit to speakers: a list of slugs from list_speakers. {FILTERS} {CITE}")
+        @mcp.tool(description=f"Search {coverage}. Optionally limit to speakers: a list of slugs from list_speakers. {FILTERS} {CITE}")
         def search(query: str = "", speakers: list[str] | None = None, limit: int = 8, from_date: str | None = None, to_date: str | None = None, sources: list[str] | None = None, cites: str | None = None) -> str:
             return search_passages(con, query, speakers, max(1, min(limit, 20)), sources, from_date, to_date, cites)
 
-        @mcp.tool(description="List every speaker with their calling, the slug to pass to search, and how many talks and articles each has.")
+        @mcp.tool(description=f"List every speaker with the slug to pass to search and how many talks each has: the leaders whose talks are all collected, with their callings, then the other General Conference speakers since {EVERYONE_SINCE}.")
         def list_speakers() -> str:
-            counts = dict(con.execute("SELECT speaker, COUNT(DISTINCT url) FROM passages GROUP BY speaker"))
-            return "\n".join(
-                f"- {name}, {CALLINGS[slug]} (slug: {slug}): " + (f"{counts[slug]} talks and articles" if counts.get(slug) else "no talks yet")
-                for slug, name in SPEAKERS.items()
-            )
+            return speaker_list(con)
 
         @mcp.tool(description="List talks and speeches, newest first, each with its talk ID for get_talk: one speaker's (a slug from list_speakers), or everyone's in a date range, such as a General Conference (from_date and to_date 2026-10, sources General Conference), listed in the order given. Optional sources narrow it. At most 250 at a time.")
         def list_talks(speaker: str | None = None, from_date: str | None = None, to_date: str | None = None, sources: list[str] | None = None) -> str:

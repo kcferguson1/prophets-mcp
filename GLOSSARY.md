@@ -30,6 +30,10 @@ _Avoid_: URL, slug, key
 One block of a talk's own text, numbered in reading order from 1 (written ¶12). Footnotes and captions are not paragraphs.
 _Avoid_: Block, section
 
+**Footnote**:
+A numbered note a talk attaches to one of its paragraphs by a marker, giving a scripture reference or the source of a quotation.
+_Avoid_: Note, endnote, reference (a reference names verses)
+
 **Passage**:
 A paragraph returned as a search result, with its talk, speaker, date and link.
 _Avoid_: Hit, snippet, excerpt

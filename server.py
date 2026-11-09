@@ -15,12 +15,19 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from mcp.server.mcpserver import MCPServer
 
-from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, EVERYONE_FROM, MAGAZINES, SPEAKERS, VERSION, VOLUMES, book_key, connect, hold_lock
+import fetch
+from fetch import BYU, CALLINGS, CHECKED, CHURCH, DB, DIMENSIONS, EVERYONE_FROM, MAGAZINES, SPEAKERS, VERSION, VOLUMES, book_key, connect, hold_lock
 
 MAX_LISTED = 250  # per list_talks call, so a broad list can't flood the context; no speaker has this many yet
 MAX_PER_TALK = 2  # so one long talk can't fill every result slot
+POOL = 20  # candidates per result taken from each ranking before blending
+RRF_K = 60  # reciprocal rank fusion's usual constant: past the first few, ranks differ little in points
+# Meaning matches less similar than this are noise: on the real index, nonsense ("zzz", "pizza toppings recipe")
+# peaks near 0.69, while real questions ("when prayers seem unanswered") start near 0.73.
+MIN_MEANING = 0.70
 MIN_WORDS = 8  # shorter paragraphs (headings, dates, "I am with you.") outrank real matches because BM25 favors short text
 FILLER = set(
     "a about am an and are as at be but by can could did do does for from has have he her his how i if in into is it its "
@@ -276,6 +283,60 @@ def talk_filters(
     return where, params
 
 
+_meanings: dict[str, tuple] = {}  # table -> (what it was loaded from, row ids, vectors)
+
+
+def meanings(con: sqlite3.Connection, table: str) -> tuple[np.ndarray, np.ndarray]:
+    """A table's row ids and compact meaning vectors, loaded once and again only after an update changed them."""
+    stamp = con.execute("SELECT COUNT(*), MAX(id) FROM meanings WHERE tbl = ?", (table,)).fetchone()
+    if table not in _meanings or _meanings[table][0] != stamp:
+        rows = con.execute("SELECT id, vector FROM meanings WHERE tbl = ?", (table,)).fetchall()
+        ids = np.array([rowid for rowid, _ in rows], dtype=np.int64)
+        vectors = np.frombuffer(b"".join(v for _, v in rows), dtype=np.int8).reshape(-1, DIMENSIONS)
+        _meanings[table] = (stamp, ids, vectors)
+    return _meanings[table][1:]
+
+
+def closest(con: sqlite3.Connection, table: str, query: str, where: list[str], params: list, pool: int) -> list[int]:
+    """Row ids of up to `pool` rows passing `where` whose meaning is closest to the query's, closest first. Empty
+    while meanings aren't ready (none filled in yet, or the model not downloaded), so search falls back to keywords."""
+    ids, vectors = meanings(con, table)
+    if not len(ids):
+        return []
+    try:
+        q = fetch.embed([query], query=True)[0]
+    except Exception:
+        return []
+    # A float copy of a slice at a time, never of every vector; / 127 undoes compact's scale, giving cosine similarity.
+    scores = np.concatenate([vectors[i:i + 8192].astype(np.float32) @ q for i in range(0, len(vectors), 8192)]) / 127
+    if where:
+        allowed = [rowid for (rowid,) in con.execute(f"SELECT rowid FROM {table} WHERE {' AND '.join(where)}", params)]
+        scores[~np.isin(ids, allowed)] = -1
+    best = np.argsort(-scores)[:pool]
+    return [int(ids[i]) for i in best if scores[i] >= MIN_MEANING]
+
+
+def fused(*rankings: list[int]) -> list[int]:
+    """Reciprocal rank fusion: a row gets 1 / (RRF_K + rank) points from each ranking it's in, so a row high on
+    both beats one high on either alone."""
+    points: dict[int, float] = {}
+    for ranking in rankings:
+        for rank, rowid in enumerate(ranking, 1):
+            points[rowid] = points.get(rowid, 0) + 1 / (RRF_K + rank)
+    return sorted(points, key=points.get, reverse=True)
+
+
+def blend(con: sqlite3.Connection, table: str, columns: str, keyword: list[tuple], sense: list[int]) -> list[tuple]:
+    """Keyword-ranked rows (row id first) and closest() row ids as one list of rows, best of both first."""
+    if not sense:
+        return keyword
+    known = {row[0]: row for row in keyword}
+    if extra := [rowid for rowid in sense if rowid not in known]:
+        query = f"SELECT rowid, {columns} FROM {table} WHERE rowid IN ({','.join('?' * len(extra))})"
+        known |= {row[0]: row for row in con.execute(query, extra)}
+    return [known[rowid] for rowid in fused([row[0] for row in keyword], sense) if rowid in known]
+
+
 def search_passages(
     con: sqlite3.Connection, query: str, speakers: list[str] | None, limit: int = 8, sources: list[str] | None = None,
     from_date: str | None = None, to_date: str | None = None, cites: str | None = None,
@@ -320,8 +381,11 @@ def search_passages(
            ORDER BY {order} LIMIT ?""",  # heavier title weight let any paragraph of a matching talk win
         # A quoted phrase or cites reads candidates until enough pass its check (-1: no limit), since the rest can
         # outnumber them; plain searches stop at a fixed pool.
-        (*params, -1 if exact or cite else limit * 20),
+        (*params, -1 if exact or cite else limit * POOL),
     )
+    if not exact and not cite:  # a quoted phrase or cites asks for exact words or verses, which meaning would only blur
+        sense = closest(con, "passages", query, filters[0], filters[1], limit * POOL)
+        rows = blend(con, "passages", "name, title, source, date, url, anchor, text", rows.fetchall(), sense)
     numbers = paragraph_numbers(con, set(cited)) if cite else {}
     per_talk: dict[str, int] = {}
     shown: set[str] = set()  # the same paragraph can be saved twice (a joint talk, a reprint under a new title); show it once
@@ -384,12 +448,13 @@ def search_verses(con: sqlite3.Connection, query: str, volume: str | None, limit
     if not match:
         return "Give a few words to search for."
     volume = VOLUMES.get(volume, volume)  # "bofm" or "Book of Mormon"
-    rows = con.execute(
-        """SELECT ref, text, url, anchor FROM verses WHERE verses MATCH ? AND (? IS NULL OR volume = ?)
-           ORDER BY bm25(verses) LIMIT ?""",
-        (match, volume, volume, limit),
+    where, params = (["volume = ?"], [volume]) if volume else ([], [])
+    keyword = con.execute(
+        f"SELECT rowid, ref, text, url, anchor FROM verses WHERE {' AND '.join(['verses MATCH ?', *where])} ORDER BY bm25(verses) LIMIT ?",
+        (match, *params, limit * POOL),
     ).fetchall()
-    out = [f"## {ref}\nSource: {verse_link(url, anchor)}\n\n{text}" for ref, text, url, anchor in rows]
+    rows = blend(con, "verses", "ref, text, url, anchor", keyword, closest(con, "verses", query, where, params, limit * POOL))[:limit]
+    out = [f"## {ref}\nSource: {verse_link(url, anchor)}\n\n{text}" for _, ref, text, url, anchor in rows]
     return "\n\n---\n\n".join(out) or f'No verse matched "{query}". Try other words.'
 
 
@@ -510,10 +575,19 @@ def keep_updated():
 
 def update_if_stale():
     """Fetch new talks in the background when there's no finished full check from the last week (or none at all),
-    or right away when saved talks still need their one-time re-read for footnotes and citations."""
+    or right away when saved talks still need their one-time re-read for footnotes and citations. Between those,
+    fill in any missing meanings (an update that couldn't download the model, say), which needs no other download."""
     with closing(sqlite3.connect(DB)) as db:
         upgraded = db.execute("PRAGMA user_version").fetchone()[0] >= VERSION
-    if upgraded and CHECKED.exists() and time.time() - CHECKED.stat().st_mtime < UPDATE_EVERY:
+        try:
+            unfilled = any(
+                db.execute(f"SELECT 1 FROM {t} WHERE rowid NOT IN (SELECT id FROM meanings WHERE tbl = '{t}') LIMIT 1").fetchone()
+                for t in ("passages", "verses")
+            )
+        except sqlite3.OperationalError:  # no such table: a new install, or an index from before meanings
+            unfilled = True
+    stale = not (upgraded and CHECKED.exists() and time.time() - CHECKED.stat().st_mtime < UPDATE_EVERY)
+    if not stale and not unfilled:
         return
     lock = hold_lock()
     if lock is None:
@@ -524,7 +598,7 @@ def update_if_stale():
     # Appended, so a later server can't wipe the log of the update that's running.
     log = open(DB.with_name("prophets-update.log"), "a")
     subprocess.Popen(
-        [sys.executable, "-u", str(Path(__file__).with_name("fetch.py"))],  # -u: unbuffered, so the log shows each talk as it's saved
+        [sys.executable, "-u", str(Path(__file__).with_name("fetch.py")), *([] if stale else ["--meanings"])],  # -u: unbuffered, so the log shows each talk as it's saved
         stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
     )
     log.close()  # the update has its own copy

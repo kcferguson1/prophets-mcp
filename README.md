@@ -22,7 +22,7 @@ Add it to Claude, Cursor or Codex. Every answer quotes its source exactly and li
 ## Highlights
 
 - **Exact words, never rewritten.** Every result is a paragraph exactly as it was spoken or published, with the speaker, title, date and a link that jumps straight to that paragraph on the Church's website.
-- **Search that understands you.** Search by topic ("repentance" also finds "repenting"), by exact phrase in quotes, and narrow by speaker, date range or source (General Conference, BYU Speeches, Church broadcasts, Liahona, Ensign, New Era, For the Strength of Youth).
+- **Search that understands what you mean.** Ask in your own words ("when prayers seem unanswered") and it also finds paragraphs that say it differently. Topic words still work ("repentance" also finds "repenting"), as do exact phrases in quotes and filters by speaker, date range or source (General Conference, BYU Speeches, Church broadcasts, Liahona, Ensign, New Era, For the Strength of Youth).
 - **Whole talks, numbered.** `get_talk` returns a talk paragraph by paragraph (¶1, ¶2…), so you can read around any quote.
 - **Whole conferences.** `list_talks` lists a General Conference's talks in the order they were given. Every speaker's talk is there from April 2021 on.
 - **Footnotes.** Each passage shows its footnotes, so you can see when a speaker is quoting someone else, and who.
@@ -39,7 +39,7 @@ You need [uv](https://docs.astral.sh/uv/), the Python package manager.
 git clone https://github.com/kcferguson1/prophets-mcp.git
 cd prophets-mcp
 uv sync
-uv run fetch.py      # downloads every talk into prophets.db (about an hour the first time; rerun any time, it skips what's saved)
+uv run fetch.py      # downloads every talk into prophets.db (about an hour the first time, then about 20 minutes on meanings; rerun any time, it skips what's saved)
 ```
 
 Then add a server from inside the folder. Leave out `--speaker` to get every speaker in one server.
@@ -92,6 +92,7 @@ To update right away, run `uv run fetch.py`. When the roster changes, run `git p
 After a `git pull`, the next update catches up on its own:
 
 - **Footnotes and citations.** The first time, the server downloads every saved talk once more in the background (about 2,300 requests, 20–40 minutes) to keep each talk's footnotes, the verses it cites and its page. Search, `get_talk` and the lists keep working the whole time; `whats_new` shows "Citation data is still being built: N of M talks done" until it finishes, and if it's stopped, the next update goes on where it left off. A few older talks' ¶ numbers may shift by one or two; talk IDs never change.
+- **Meaning search.** The server notices that meanings are missing and fills them in on its own, in the background (about 20 minutes, once). Search keeps working on words alone until then.
 - **Every speaker since April 2021.** The next full update reads each General Conference from April 2021 on once more and adds the talks by speakers off the roster (about 200 talks, a few minutes).
 
 ### Tools
@@ -137,7 +138,7 @@ flowchart LR
 
     subgraph mac["💻&nbsp;Your&nbsp;computer"]
         F["📥 <b>fetch.py</b><br/>the downloader<br/>checks every week"]
-        DB[("🗄️ <b>prophets.db</b><br/>talks · footnotes<br/>verses · citations")]
+        DB[("🗄️ <b>prophets.db</b><br/>talks · footnotes<br/>verses · citations<br/>meanings")]
         S["🔌 <b>server.py</b><br/>the MCP server<br/>search · get_talk · get_verses"]
     end
 
@@ -148,8 +149,8 @@ flowchart LR
 
     GL -- "talk pages" --> F
     BYU -- "speech pages" --> F
-    F -- "saves the<br/>exact words" --> DB
-    DB -- "finds the right<br/>paragraphs" --> S
+    F -- "saves the exact words<br/>and what they mean" --> DB
+    DB -- "finds the right paragraphs<br/>by words and meaning" --> S
     S <-- "asks a tool ·<br/>gets real passages" --> C
     C --> A
 
@@ -168,21 +169,22 @@ flowchart LR
 
 **In four steps:**
 
-1. **Download.** `fetch.py` visits the Church's website and BYU Speeches, reads each talk page, and keeps the exact words, paragraph by paragraph, along with the footnotes and every scripture each paragraph points to. It does this once, then checks for new talks every week.
+1. **Download.** `fetch.py` visits the Church's website and BYU Speeches, reads each talk page, and keeps the exact words, paragraph by paragraph, along with the footnotes and every scripture each paragraph points to. Then it works out what each paragraph and verse means, as a list of numbers (see the FAQ). It does all this once, then checks for new talks every week.
 2. **Store.** Everything goes into one file on your computer, `prophets.db`. It's a SQLite database, which is a whole searchable library packed into a single file.
 3. **Serve.** `server.py` is the MCP server. It offers your AI app a set of tools (search, read a talk, look up a verse) that answer from that file.
 4. **Answer.** When you ask a question, your AI app calls those tools, gets back the real paragraphs with their links, and quotes them to you. The AI never has to remember a quote, so it can't misquote one.
 
 | Step | Command | Output |
 |---|---|---|
-| 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk with its footnotes and citations, its title, date, source and link, and every verse of the standard works |
+| 1. Fetch | `uv run fetch.py [slug ...]` | `prophets.db`: every paragraph of every talk with its footnotes, citations and meaning, its title, date, source and link, and every verse of the standard works (`--meanings` only fills in missing meanings) |
 | 2. Check | `uv run test_prophets.py` | A self-check of the page reader, search, citations and updates, and a re-read of every saved page; it also runs on GitHub after every push |
 | 3. Serve | `uv run server.py [--speaker slug]` | An MCP server over stdio, ready for Claude, Cursor or Codex |
 | 4. Update | automatic, weekly | The server reruns step 1 in the background when the last full check is over 7 days old, checking at start and daily |
 
 - **Sources.** Everything comes from two official places. The Church's Gospel Library API on churchofjesuschrist.org supplies General Conference talks (found through each conference's table of contents and each speaker's page), broadcasts and devotionals, and articles from the Liahona (2021 on), For the Strength of Youth (2021 on), Ensign and New Era (1971–2020), plus the Church's edition of the standard works. BYU devotionals and forums come from the BYU Speeches data API, with footnotes from each speech's page.
 - **Who spoke.** Each talk is matched to its speakers by the byline and the speaker recorded in the Church's own page data. Roster leaders are collected from every source; from April 2021 on, every General Conference speaker is collected too, under the speaker link the Church gives them. Devotionals and magazines are listed by event and issue, so `uv run fetch.py <slug>` for one speaker covers only conference and BYU; a full run covers everything.
-- **Search.** SQLite's built-in full-text search (FTS5) ranks paragraphs with BM25, a standard way to score how well text matches a question. Porter stemming means "repenting" also finds "repentance". A matching talk title helps a passage rank, footnotes aren't searched, and at most two passages come from any one talk, so one long talk can't fill every result.
+- **Search.** Two rankings are blended. SQLite's built-in full-text search (FTS5) ranks paragraphs by their words with BM25, a standard way to score how well text matches a question; Porter stemming means "repenting" also finds "repentance", and a matching talk title helps a passage rank. Meaning search ranks them by how close each paragraph's meaning is to the question's, so "dealing with anxiety and depression" finds President Eyring's paragraph on adversity, distress and fear, which names neither. Reciprocal rank fusion (RRF) merges the two: a paragraph gets points for ranking high on either list, so one high on both comes first. Quoted phrases and `cites` searches use words alone, since they ask for exact words or verses. Footnotes aren't searched, and at most two passages come from any one talk, so one long talk can't fill every result.
+- **Meanings.** [`fastembed`](https://github.com/qdrant/fastembed) runs a small open model, [`bge-small-en-v1.5`](https://huggingface.co/BAAI/bge-small-en-v1.5), on your own computer to turn each paragraph and verse into 384 numbers (an embedding). They're kept in `prophets.db` at one byte per number, about 45 MB in all; the model itself (64 MB) is downloaded once into a `models` folder beside it. If the model isn't there yet, search simply uses words alone.
 - **Footnotes and citations.** Church pages link each scripture to its exact verses; BYU speeches before 2010 type their references in parentheses, so those are read from the text and checked against the verses. Each talk's page is kept, compressed, so a future reader can re-read it without downloading it again ([ADR 0001](docs/adr/0001-keep-page-html-and-reread-talks.md)).
 - **Skipped on purpose.** The sustaining of Church officers, solemn assemblies, auditing reports and statistical reports are left out; they're procedure, not teaching. Magazine reprints and excerpts of conference talks are left out too, since the full talk is already there.
 
@@ -213,6 +215,12 @@ The project started with the prophets and apostles, and older conferences are ke
 **Can it change or make up a quote?**
 The server can't. It only hands back text exactly as it appears on the Church's website, with a link. The AI app writes the answer around those quotes, so if something it says sounds off, click the link and read the original.
 
+**How does it understand what I mean?**
+Each paragraph gets turned into a list of 384 numbers that describe what it's about, a bit like map coordinates for ideas. Paragraphs about similar ideas get similar numbers, even when they use different words. Your question gets numbers too, and the search finds the paragraphs whose numbers are closest. It blends those with the plain word matches, so you get both: paragraphs with your exact words, and paragraphs that mean the same thing in other words.
+
+**Does that mean it makes things up now?**
+No. Meaning only changes which paragraphs are picked. Every result is still a real paragraph, word for word, with its link.
+
 **What's a footnote, and why does it matter?**
 A footnote is the small numbered note at the bottom of a talk. It says where a scripture or a quote came from. If a footnote says a sentence came from another leader or a book, you know the speaker was quoting someone, and you can give the right person credit.
 
@@ -229,13 +237,13 @@ While your AI app is open, the server checks once a day. If a week has passed si
 Not directly. The server runs on your computer, and phone apps can only connect to servers on the internet. On your phone, your AI app falls back to searching the web.
 
 **Does it send my questions anywhere?**
-The server itself only talks to the Church and BYU websites, to download talks. Your questions go to your AI app the same way they always do; the server just answers the app's lookups on your own computer.
+The server itself only talks to the Church and BYU websites, to download talks, and once to Hugging Face, a site that hosts open AI models, to download the meaning model. Meaning search runs on your own computer, so your questions never go to it. Your questions go to your AI app the same way they always do; the server just answers the app's lookups on your own computer.
 
 **Is this an official Church project?**
 No. It's an unofficial tool. The talks belong to the Church and BYU, and their terms allow personal, noncommercial use, which is why everything stays on your own computer.
 
 **How much space and time does it take?**
-The first download takes about an hour and makes a file of about 150 MB. After that, weekly updates take a few minutes.
+The first download takes about an hour, plus about 20 minutes to work out every paragraph's meaning. It makes a file of about 220 MB, and the meaning model takes another 64 MB. Search works the whole time, on words alone until the meanings are done. After that, weekly updates take a few minutes.
 
 **Something looks wrong. What do I do?**
 Run `uv run test_prophets.py`. It checks the whole setup, including re-reading every saved page. The file `prophets-update.log` shows what each update did, and lines starting with `!` are pages it couldn't read.

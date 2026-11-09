@@ -42,6 +42,10 @@ _Avoid_: Note, endnote, reference (a reference names verses)
 A paragraph returned as a search result, with its talk, speaker, date and link.
 _Avoid_: Hit, snippet, excerpt
 
+**Meaning search**:
+Finding paragraphs and verses by what they say rather than the words they use, blended with word search so a question asked in other words still finds them. Quoted phrases and citation searches use words alone.
+_Avoid_: Semantic search, vector search, AI search
+
 ### Scriptures
 
 **Standard works**:

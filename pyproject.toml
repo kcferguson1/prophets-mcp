@@ -4,5 +4,6 @@ version = "0.1.0"
 description = "Searchable, cited MCP servers built from the talks of the First Presidency and the Quorum of the Twelve Apostles."
 requires-python = ">=3.11"
 dependencies = [
+    "fastembed>=0.9.1",
     "mcp>=2.3.0",
 ]

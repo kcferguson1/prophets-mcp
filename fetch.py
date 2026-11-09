@@ -4,6 +4,7 @@ Sources: General Conference, BYU Speeches, Church broadcasts and devotionals, th
 New Era and For the Strength of Youth magazines, and the standard works (verse by verse).
 
 Usage: uv run fetch.py [speaker-slug ...]   (no slugs = everyone and every source; rerunning skips what's saved)
+       uv run fetch.py --meanings          (only fill in missing meanings for search)
 """
 import html
 import json
@@ -21,9 +22,15 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import NamedTuple
 
+import numpy as np
+
 DB = Path(os.environ.get("PROPHETS_DB") or Path(__file__).with_name("prophets.db"))  # hosts point this at a disk
 LOCK = DB.with_suffix(".updating")  # locked (not just present) while an update runs; see hold_lock
 CHECKED = DB.with_suffix(".checked")  # touched only when a full run finishes cleanly
+MODELS = DB.with_name("models")  # the meaning model's files; not the system temp folder, which macOS clears
+MODEL = "BAAI/bge-small-en-v1.5"  # small English model, 384 numbers per text, runs on the computer itself
+DIMENSIONS = 384
+MEANING_BATCH = 2048  # texts embedded and saved per commit, so a stopped run loses little
 CHURCH = "https://www.churchofjesuschrist.org"
 API = f"{CHURCH}/study/api/v3/language-pages/type"
 BYU = "https://speeches.byu.edu"
@@ -442,7 +449,54 @@ def connect(path=DB) -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS pages (url TEXT PRIMARY KEY, html BLOB)")
     # Talks saved by the current reader, with footnotes and citations. Lets the one-time re-read resume where it stopped.
     con.execute("CREATE TABLE IF NOT EXISTS reread (url TEXT PRIMARY KEY)")
+    # Each paragraph's and verse's meaning for search: 384 numbers, one signed byte each (see compact), keyed by its
+    # table and row id.
+    con.execute("CREATE TABLE IF NOT EXISTS meanings (tbl TEXT, id INTEGER, vector BLOB, PRIMARY KEY (tbl, id)) WITHOUT ROWID")
     return con
+
+
+_model = None
+
+
+def embed(texts: list[str], query: bool = False) -> np.ndarray:
+    """Each text's meaning as a unit-length row of DIMENSIONS numbers. A query gets the model's search instruction
+    added, and loads the model only from disk, so a search never waits on a download."""
+    global _model
+    if _model is None:
+        from fastembed import TextEmbedding  # here, not at the top: loading it takes a second the server shouldn't spend at startup
+
+        _model = TextEmbedding(MODEL, cache_dir=str(MODELS), local_files_only=query)
+    found = _model.query_embed(texts) if query else _model.embed(texts, batch_size=256)
+    return np.array(list(found), dtype=np.float32)
+
+
+def compact(vectors: np.ndarray) -> np.ndarray:
+    """One signed byte per number instead of four; the prototype kept 93 of 100 top-10 meaning results unchanged."""
+    return np.clip(np.round(vectors * 127), -127, 127).astype(np.int8)
+
+
+def fill_meanings(con) -> None:
+    """Embed every paragraph and verse that has no meaning yet, and drop the meanings of rows that are gone. Each
+    text is embedded once however many rows share it, shortest first, since a batch costs as much as its longest text."""
+    for table, kind in (("passages", "paragraphs"), ("verses", "verses")):
+        with con:
+            con.execute(f"DELETE FROM meanings WHERE tbl = ? AND id NOT IN (SELECT rowid FROM {table})", (table,))
+        rows = con.execute(f"SELECT rowid, text FROM {table} WHERE rowid NOT IN (SELECT id FROM meanings WHERE tbl = ?)", (table,))
+        rowids: dict[str, list[int]] = {}
+        for rowid, text in rows:
+            rowids.setdefault(text, []).append(rowid)
+        texts = sorted(rowids, key=len)
+        if texts:
+            print(f"Meanings for {len(texts):,} {kind}", flush=True)
+        for start in range(0, len(texts), MEANING_BATCH):
+            batch = texts[start:start + MEANING_BATCH]
+            vectors = compact(embed(batch))
+            with con:
+                con.executemany(
+                    "INSERT OR REPLACE INTO meanings VALUES (?,?,?)",
+                    [(table, rowid, v.tobytes()) for text, v in zip(batch, vectors) for rowid in rowids[text]],
+                )
+            print(f"  {min(start + MEANING_BATCH, len(texts)):,} of {len(texts):,}", flush=True)
 
 
 def conference(slug: str, done: set[str]):
@@ -693,6 +747,8 @@ def reread(con) -> bool:
         with con:
             if talk and talk.paras:
                 copies = con.execute("SELECT DISTINCT title, speaker, name, source, date FROM passages WHERE url = ?", (url,)).fetchall()
+                # SQLite can hand a deleted row's id to the next row inserted, so its meaning must go with it.
+                con.execute("DELETE FROM meanings WHERE tbl = 'passages' AND id IN (SELECT rowid FROM passages WHERE url = ?)", (url,))
                 con.execute("DELETE FROM passages WHERE url = ?", (url,))
                 con.executemany(
                     "INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)",
@@ -730,7 +786,22 @@ def save_record(con, hit):
             save(con, slug, src, title, date, url, talk, shown)
 
 
+def meanings_step(con) -> None:
+    """fill_meanings, where a failure (no internet for the first model download, say) only means search stays
+    keyword-only for now: the server notices missing meanings and runs this again."""
+    try:
+        fill_meanings(con)
+    except Exception as e:
+        print(f"  ! meanings stopped: {e}; search uses keywords alone until they're filled in", file=sys.stderr)
+
+
 def main():
+    if sys.argv[1:] == ["--meanings"]:  # what the server runs when only meanings are missing
+        lock = hold_lock()
+        if lock is None:
+            sys.exit("Another update is already running. Try again when it finishes.")
+        meanings_step(connect())
+        return
     slugs = sys.argv[1:] or list(SPEAKERS)
     if unknown := [s for s in slugs if s not in SPEAKERS]:
         sys.exit(f"Unknown speaker(s): {', '.join(unknown)}. Choose from: {', '.join(SPEAKERS)}")
@@ -802,6 +873,7 @@ def main():
             failed = True
         if not failed:
             CHECKED.touch()  # the weekly update waits another week; a cut-off or failed run never gets here, so it retries
+    meanings_step(con)
     new = con.execute("SELECT COUNT(DISTINCT url) FROM added WHERE at >= ?", (started,)).fetchone()[0]
     print(f"Update finished: {new} new talks and articles" + (" (stopped early; the next run picks up the rest)" if failed else ""))
 

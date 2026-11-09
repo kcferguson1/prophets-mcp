@@ -1,6 +1,7 @@
 """Self-check for the parser, author matching, search and update safety. Run: uv run test_prophets.py"""
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -9,6 +10,8 @@ import time
 import urllib.error
 import zlib
 from contextlib import closing
+
+import numpy as np
 
 os.environ["PROPHETS_DB"] = os.path.join(tempfile.mkdtemp(), "prophets.db")  # never touch the real index or lock
 
@@ -424,6 +427,59 @@ assert cc.execute("SELECT url, para, number, text FROM footnotes").fetchall() ==
 assert cc.execute("SELECT para, chapter, verse, footnote FROM citations").fetchall() == fetch.citations(cc, "General Conference", talk)
 assert zlib.decompress(cc.execute("SELECT html FROM pages WHERE url = 'https://x/ask?lang=eng'").fetchone()[0]).decode() == church
 
+# Meaning search, with a stand-in model so tests never download the real one: words of one concept point the same
+# way, weighted so a paragraph about it is close to a query about it whatever its other words; any other word gets a
+# direction of its own, so nonsense is close to nothing.
+CONCEPTS = {"sorrow": 0, "grief": 0, "mourn": 0, "peace": 1, "comfort": 1}
+embedded: list[list[str]] = []
+def fake_embed(texts, query=False):
+    embedded.append(list(texts))
+    out = np.zeros((len(texts), fetch.DIMENSIONS), dtype=np.float32)
+    for row, text in zip(out, texts):
+        for w in re.findall(r"\w+", text.lower()):
+            if w in CONCEPTS:
+                row[CONCEPTS[w]] += 10
+            else:
+                row[2 + zlib.crc32(w.encode()) % (fetch.DIMENSIONS - 2)] += 1
+        row /= np.linalg.norm(row) or 1
+    return out
+mc = connect(":memory:")
+mourn = "When we mourn the passing of those we love, the Savior carries our sorrow with us each day."
+grief = "Hope in Christ lifts us when grief comes; He walks beside us through every valley we enter."
+tithe = "Tithing is a law of the Lord that opens the windows of heaven to the faithful who pay it."
+for title, text, slug, n in [("Mourn", mourn, "dallin-h-oaks", 1), ("Mourn", mourn, "henry-b-eyring", 1), ("Hope", grief, "henry-b-eyring", 2), ("Tithe", tithe, "dallin-h-oaks", 3)]:
+    mc.execute("INSERT INTO passages VALUES (?,?,?,?,?,?,?,?)", (title, text, slug, SPEAKERS[slug], "General Conference", "2020-04", f"https://m/{n}?lang=eng", "p1"))
+for ref, text, v in [("Matthew 5:4", "Blessed are they that mourn: for they shall be comforted.", 4), ("Matthew 5:9", "Blessed are the peacemakers.", 9)]:
+    mc.execute("INSERT INTO verses VALUES (?,?,?,?,?,?,?,?)", (ref, text, "New Testament", "Matthew", 5, v, "https://s/matt/5?lang=eng", f"p{v}"))
+real_embed, fetch.embed = fetch.embed, fake_embed
+try:
+    assert "Hope" not in search_passages(mc, "sorrow", None)  # no meanings yet: keywords alone, as before
+    assert search_verses(mc, "sorrow", None).startswith("No verse matched")
+    fetch.fill_meanings(mc)
+    assert embedded == [sorted([mourn, grief, tithe], key=len), sorted([v for (v,) in mc.execute("SELECT text FROM verses")], key=len)]  # each text once, shortest first
+    assert mc.execute("SELECT COUNT(*) FROM meanings").fetchone()[0] == 6
+    found = search_passages(mc, "sorrow", None)
+    assert found.index('"Mourn"') < found.index('"Hope"') and "Tithe" not in found, found  # on both rankings first, then meaning alone
+    assert found.count(mourn) == 1  # a joint talk's copies still show once
+    assert "Hope" not in search_passages(mc, "sorrow", ["dallin-h-oaks"])  # meaning matches obey the filters
+    assert "Hope" not in search_passages(mc, '"sorrow"', None)  # a quoted phrase stays exact
+    assert "Nothing matched" in search_passages(mc, "zzz", None)  # nonsense is close to nothing
+    assert "## Matthew 5:4\n" in search_verses(mc, "sorrow", None) and "5:9" not in search_verses(mc, "sorrow", None)
+    embedded.clear()
+    fetch.fill_meanings(mc)
+    assert embedded == []  # nothing new to embed
+    mc.execute("DELETE FROM passages WHERE title = 'Tithe'")
+    fetch.fill_meanings(mc)
+    assert mc.execute("SELECT COUNT(*) FROM meanings WHERE tbl = 'passages'").fetchone()[0] == 3  # a gone row's meaning goes too
+    def no_model(texts, query=False):
+        raise OSError("model not downloaded")
+    fetch.embed = no_model
+    assert "Hope" not in search_passages(mc, "sorrow", None) and "Mourn" in search_passages(mc, "sorrow", None)  # keywords alone
+    mc.execute("INSERT INTO passages VALUES ('New', 'A new talk.', 'dallin-h-oaks', 'Dallin H. Oaks', 'Liahona', '2026-01', 'https://m/9', 'p1')")
+    fetch.meanings_step(mc)  # a failed fill is reported, not raised, so the rest of the update still counts
+finally:
+    fetch.embed = real_embed
+
 # The one-time re-read: fresh paragraphs for every speaker on a talk, whats_new untouched, a removed page's text kept,
 # and a failed request left for next time; the version is set only when every talk is done.
 up = connect(":memory:")
@@ -446,7 +502,12 @@ def site_get(url):
         return json.dumps([{"link": speech_url, "date": "2015-01-01", "title": {"rendered": "Y"}, "content": {"rendered": byu_text}}])
     return notes_page(url)
 fetch.api, fetch.get, notes_page = site_api, site_get, busy
+real_embed, fetch.embed = fetch.embed, fake_embed
+fetch.fill_meanings(up)  # so the re-read below must drop replaced rows' meanings, even when SQLite reuses a row id
 assert fetch.reread(up) is False  # the BYU notes request failed: its text is saved, the talk left for next time
+for rowid, text in up.execute("SELECT rowid, text FROM passages"):  # a meaning is the current text's, or none yet
+    kept = up.execute("SELECT vector FROM meanings WHERE tbl = 'passages' AND id = ?", (rowid,)).fetchone()
+    assert kept is None or kept[0] == fetch.compact(fake_embed([text]))[0].tobytes(), text
 assert up.execute("PRAGMA user_version").fetchone()[0] == 0
 assert up.execute("SELECT speaker, text, anchor FROM passages WHERE url = ? ORDER BY rowid", (uchtdorf,)).fetchall() == [
     (s, t, a) for s in ("dallin-h-oaks", "henry-b-eyring") for a, t in talk.paras]
@@ -459,7 +520,7 @@ notes_page = lambda url: f"<div id=is-notes-body hidden>{panel}</div>"
 assert fetch.reread(up) is True and up.execute("PRAGMA user_version").fetchone()[0] == fetch.VERSION
 assert up.execute("SELECT number, text FROM footnotes WHERE url = ?", (speech_url,)).fetchall() == [(2, "Matthew 10:39; quoted in Marion G. Romney.")]
 assert "Citation data" not in recent_additions(up, None)
-fetch.api, fetch.get = real_api, real_get
+fetch.api, fetch.get, fetch.embed = real_api, real_get, real_embed
 
 # A database upgraded before the footnote columns were renamed from "note" gets them renamed, rows and all.
 old_db = os.path.join(tempfile.mkdtemp(), "old.db")
@@ -535,10 +596,11 @@ def set_version(n):
     with closing(sqlite3.connect(fetch.DB)) as db:
         db.execute(f"PRAGMA user_version = {n}")
 try:
+    connect(fetch.DB).close()
     set_version(fetch.VERSION)
     fetch.CHECKED.unlink(missing_ok=True)
     server.update_if_stale()
-    assert len(started) == 1, "no full check yet: update"
+    assert len(started) == 1 and started[0][0][-1].endswith("fetch.py"), "no full check yet: update"
     fetch.CHECKED.touch()
     server.update_if_stale()
     assert len(started) == 1, "checked just now: wait"
@@ -554,6 +616,11 @@ try:
     set_version(0)
     server.update_if_stale()
     assert len(started) == 3, "talks still need their one-time re-read: update now, not in a week"
+    set_version(fetch.VERSION)
+    with closing(connect(fetch.DB)) as db, db:
+        db.execute("INSERT INTO passages VALUES ('T', 'Text.', 'dallin-h-oaks', 'Dallin H. Oaks', 'Liahona', '2026-01', 'https://t', 'p1')")
+    server.update_if_stale()
+    assert len(started) == 4 and started[3][0][-1] == "--meanings", "checked, but meanings missing: fill them in alone"
 finally:
     server.subprocess.Popen = real_popen
 
